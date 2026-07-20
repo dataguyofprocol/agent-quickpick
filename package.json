@@ -1,8 +1,8 @@
 {
   "name": "agent-quickpick",
   "displayName": "Agent Quickpick",
-  "description": "Quick-pick launcher for agent terminals (claude, claude-proxy, claude-glm, opencode, omp, droid, cmd) opened in the editor area.",
-  "version": "0.1.9",
+  "description": "Quick-pick launcher for agent CLI terminals — Claude, Opencode, Claude Proxy, Claude GLM, oh-my-pi, Droid, Command Code, and your own — opened in the editor area with their own icon and tab color.",
+  "version": "0.2.2",
   "publisher": "dataguyofprocol",
   "license": "MIT",
   "icon": "icons/icon.png",
@@ -10,11 +10,26 @@
     "type": "git",
     "url": "https://github.com/dataguyofprocol/agent-quickpick.git"
   },
+  "bugs": {
+    "url": "https://github.com/dataguyofprocol/agent-quickpick/issues"
+  },
+  "homepage": "https://github.com/dataguyofprocol/agent-quickpick#readme",
   "engines": {
     "vscode": "^1.85.0"
   },
   "categories": [
     "Other"
+  ],
+  "keywords": [
+    "agent",
+    "ai",
+    "terminal",
+    "claude",
+    "cursor",
+    "windsurf",
+    "trae",
+    "quick pick",
+    "launcher"
   ],
   "activationEvents": [],
   "main": "./out/extension.js",
@@ -22,19 +37,129 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "vscode:prepublish": "npm run compile",
-    "package": "vsce package"
+    "package": "vsce package",
+    "test": "node ./out/test/runTest.js"
   },
   "contributes": {
     "colors": [
-      { "id": "agentQuickpick.claude", "description": "Claude agent terminal color", "defaults": { "dark": "#FF8C00", "light": "#FF8C00", "highContrast": "#FF8C00" } },
-      { "id": "agentQuickpick.claudeProxy", "description": "Claude Proxy agent terminal color", "defaults": { "dark": "#FF8C00", "light": "#FF8C00", "highContrast": "#FF8C00" } },
-      { "id": "agentQuickpick.claudeGlm", "description": "Claude GLM agent terminal color", "defaults": { "dark": "#6B7280", "light": "#6B7280", "highContrast": "#6B7280" } },
-      { "id": "agentQuickpick.commandcode", "description": "Command Code agent terminal color", "defaults": { "dark": "#A855F7", "light": "#A855F7", "highContrast": "#A855F7" } },
-      { "id": "agentQuickpick.opencode", "description": "OpenCode agent terminal color", "defaults": { "dark": "#3B82F6", "light": "#3B82F6", "highContrast": "#3B82F6" } },
-      { "id": "agentQuickpick.omp", "description": "OMP agent terminal color", "defaults": { "dark": "#EC4899", "light": "#EC4899", "highContrast": "#EC4899" } },
-      { "id": "agentQuickpick.droid", "description": "Droid agent terminal color", "defaults": { "dark": "#EAB308", "light": "#EAB308", "highContrast": "#EAB308" } },
-      { "id": "agentQuickpick.terminal", "description": "Plain terminal color", "defaults": { "dark": "#64748B", "light": "#64748B", "highContrast": "#64748B" } }
+      {
+        "id": "agentQuickpick.claude",
+        "description": "Claude agent terminal color",
+        "defaults": {
+          "dark": "#FF8C00",
+          "light": "#FF8C00",
+          "highContrast": "#FF8C00"
+        }
+      },
+      {
+        "id": "agentQuickpick.claudeProxy",
+        "description": "Claude Proxy agent terminal color",
+        "defaults": {
+          "dark": "#FF8C00",
+          "light": "#FF8C00",
+          "highContrast": "#FF8C00"
+        }
+      },
+      {
+        "id": "agentQuickpick.claudeGlm",
+        "description": "Claude GLM agent terminal color",
+        "defaults": {
+          "dark": "#6B7280",
+          "light": "#6B7280",
+          "highContrast": "#6B7280"
+        }
+      },
+      {
+        "id": "agentQuickpick.commandcode",
+        "description": "Command Code agent terminal color",
+        "defaults": {
+          "dark": "#A855F7",
+          "light": "#A855F7",
+          "highContrast": "#A855F7"
+        }
+      },
+      {
+        "id": "agentQuickpick.opencode",
+        "description": "OpenCode agent terminal color",
+        "defaults": {
+          "dark": "#3B82F6",
+          "light": "#3B82F6",
+          "highContrast": "#3B82F6"
+        }
+      },
+      {
+        "id": "agentQuickpick.omp",
+        "description": "OMP agent terminal color",
+        "defaults": {
+          "dark": "#EC4899",
+          "light": "#EC4899",
+          "highContrast": "#EC4899"
+        }
+      },
+      {
+        "id": "agentQuickpick.droid",
+        "description": "Droid agent terminal color",
+        "defaults": {
+          "dark": "#EAB308",
+          "light": "#EAB308",
+          "highContrast": "#EAB308"
+        }
+      },
+      {
+        "id": "agentQuickpick.terminal",
+        "description": "Plain terminal color",
+        "defaults": {
+          "dark": "#64748B",
+          "light": "#64748B",
+          "highContrast": "#64748B"
+        }
+      }
     ],
+    "configuration": {
+      "title": "Agent Quickpick",
+      "properties": {
+        "agentQuickpick.agents": {
+          "type": "array",
+          "scope": "machine-overridable",
+          "uniqueItems": true,
+          "markdownDescription": "Custom agents shown in the quick pick. Each entry: `{name, cmd, icon, color, hidden}`. Built-ins are included automatically; to hide a built-in, repeat its `name` here with `\"hidden\": true`.\n\n- **name** *(required)*: Display name (shown in quick pick + terminal tab).\n- **cmd**: Shell command to launch. Empty = plain terminal. Shell functions/aliases work since VS Code terminals are interactive.\n- **icon**: A built-in codicon id (`terminal`, `rocket`, `beaker`, `hubot`, …), an absolute path to an SVG/PNG on disk, or a filename bundled with the extension (`claude.svg`). Defaults to `terminal`.\n- **color**: A tab color — either an existing built-in color id (`agentQuickpick.claude`, `agentQuickpick.opencode`, …) or a stock `terminal.ansi*` key (`terminal.ansiBlue`, `terminal.ansiMagenta`, …). Optional.\n- **hidden**: `true` to hide this agent.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Display name (quick pick + terminal tab)."
+              },
+              "cmd": {
+                "type": "string",
+                "description": "Shell command to launch. Empty = plain terminal. Shell functions/aliases work."
+              },
+              "icon": {
+                "type": "string",
+                "description": "Codicon id (e.g. 'rocket'), absolute path to an SVG/PNG, or a bundled filename (e.g. 'claude.svg'). Default 'terminal'."
+              },
+              "color": {
+                "type": "string",
+                "description": "Built-in color id (agentQuickpick.claude, ...) or stock terminal.ansi* key. Optional."
+              },
+              "hidden": {
+                "type": "boolean",
+                "default": false,
+                "description": "Hide this agent from the quick pick. Use to suppress a built-in."
+              }
+            },
+            "required": [
+              "name"
+            ]
+          }
+        },
+        "agentQuickpick.detectInstalled": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Detect installed CLIs on your PATH and warn before opening an agent whose `cmd` isn't found. Disable if your agents rely on shell aliases/functions you don't want flagged."
+        }
+      }
+    },
     "commands": [
       {
         "command": "agentQuickpick.open",
@@ -50,8 +175,12 @@
     ]
   },
   "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^20.19.43",
     "@types/vscode": "^1.85.0",
+    "@vscode/test-electron": "^2.5.2",
     "@vscode/vsce": "^3.2.1",
+    "mocha": "^10.8.2",
     "typescript": "^5.7.2"
   }
 }

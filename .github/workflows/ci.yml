@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main, feat/v1]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    name: Build & test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Compile
+        run: npm run compile
+
+      - name: Run tests (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm test
+
+      - name: Run tests (macOS / Windows)
+        if: runner.os != 'Linux'
+        run: npm test
+
+      - name: Package vsix
+        run: npm run package
+
+      - name: Upload vsix artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-quickpick-${{ matrix.os }}
+          path: "*.vsix"
+          if-no-files-found: error
+          retention-days: 14

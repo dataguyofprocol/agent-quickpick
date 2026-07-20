@@ -1,16 +1,13 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
-  <rect width="128" height="128" rx="26" fill="#1e1e2e"/>
-  <!-- four agent color dots arranged as a quickpick list -->
-  <g>
-    <circle cx="30" cy="38" r="9" fill="#FF8C00"/>
-    <rect x="48" y="33" width="52" height="10" rx="5" fill="#3a3a4a"/>
+  <!-- deep navy tile; the four swatches pop against it -->
+  <rect width="128" height="128" rx="28" fill="#0F1226"/>
 
-    <circle cx="30" cy="64" r="9" fill="#3B82F6"/>
-    <rect x="48" y="59" width="52" height="10" rx="5" fill="#4a4a5c"/>
+  <!-- 2x2 grid of agent brand colors: Claude, OpenCode, Command Code, OMP -->
+  <rect x="22" y="22" width="36" height="36" rx="9" fill="#FF8C00"/>
+  <rect x="70" y="22" width="36" height="36" rx="9" fill="#3B82F6"/>
+  <rect x="22" y="70" width="36" height="36" rx="9" fill="#A855F7"/>
+  <rect x="70" y="70" width="36" height="36" rx="9" fill="#EC4899"/>
 
-    <circle cx="30" cy="90" r="9" fill="#EC4899"/>
-    <rect x="48" y="85" width="40" height="10" rx="5" fill="#3a3a4a"/>
-  </g>
-  <!-- droid accent dot top corner -->
-  <circle cx="104" cy="24" r="7" fill="#EAB308"/>
+  <!-- selection ring around the Claude-orange swatch: "pick one" -->
+  <rect x="15" y="15" width="50" height="50" rx="15" fill="none" stroke="#FFFFFF" stroke-width="5"/>
 </svg>
