@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 400" width="800" height="400" font-family="-apple-system, 'SF Pro Text', system-ui, sans-serif">
+  <!-- VS Code dark theme -->
+  <rect width="800" height="400" fill="#1e1e1e"/>
+
+  <!-- Editor tab bar -->
+  <rect x="0" y="0" width="800" height="36" fill="#2d2d2d"/>
+  <!-- Claude tab (active) -->
+  <rect x="48" y="0" width="120" height="36" fill="#1e1e1e"/>
+  <rect x="48" y="0" width="120" height="2" fill="#FF8C00"/>
+  <rect x="58" y="11" width="14" height="14" rx="3" fill="#FF8C00"/>
+  <text x="78" y="23" fill="#ffffff" font-size="12">Claude</text>
+  <!-- OpenCode tab -->
+  <rect x="168" y="0" width="130" height="36" fill="#2d2d2d"/>
+  <rect x="178" y="11" width="14" height="14" rx="3" fill="#3B82F6"/>
+  <text x="198" y="23" fill="#cccccc" font-size="12">OpenCode</text>
+
+  <!-- Split: Claude terminal -->
+  <rect x="0" y="36" width="400" height="364" fill="#1e1e1e"/>
+  <text x="16" y="64" fill="#FF8C00" font-size="13" font-family="monospace">~/project ❯ claude</text>
+  <text x="16" y="86" fill="#cccccc" font-size="12" font-family="monospace">✓ Welcome to Claude Code v1.0</text>
+  <text x="16" y="106" fill="#858585" font-size="12" font-family="monospace">  What would you like to do?</text>
+  <text x="16" y="130" fill="#FF8C00" font-size="13" font-family="monospace">> █</text>
+
+  <!-- Divider -->
+  <rect x="400" y="36" width="1" height="364" fill="#3c3c3c"/>
+
+  <!-- Split: OpenCode terminal -->
+  <rect x="401" y="36" width="399" height="364" fill="#1e1e1e"/>
+  <text x="417" y="64" fill="#3B82F6" font-size="13" font-family="monospace">~/project ❯ opencode</text>
+  <text x="417" y="86" fill="#cccccc" font-size="12" font-family="monospace">✓ OpenCode v0.10 ready</text>
+  <text x="417" y="106" fill="#858585" font-size="12" font-family="monospace">  Select a model to begin…</text>
+  <text x="417" y="130" fill="#3B82F6" font-size="13" font-family="monospace">> █</text>
+</svg>

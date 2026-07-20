@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 360" width="600" height="360" font-family="-apple-system, 'SF Pro Text', system-ui, sans-serif">
+  <!-- VS Code dark-theme background -->
+  <rect width="600" height="360" fill="#1e1e1e"/>
+  <rect x="0" y="0" width="600" height="36" fill="#323233"/>
+  <text x="16" y="23" fill="#cccccc" font-size="13" font-weight="500">Agent Quickpick — Command Palette</text>
+
+  <!-- Quick pick container -->
+  <rect x="80" y="60" width="440" height="280" rx="6" fill="#252526" stroke="#3c3c3c" stroke-width="1"/>
+
+  <!-- Input row -->
+  <rect x="80" y="60" width="440" height="34" rx="6" fill="#3c3c3c"/>
+  <text x="96" y="82" fill="#cccccc" font-size="13">Open agent terminal</text>
+
+  <!-- Eye toggle button (top-right) -->
+  <g transform="translate(486, 70)">
+    <rect x="0" y="0" width="24" height="14" rx="3" fill="none" stroke="#5a5a5a" stroke-width="1"/>
+    <text x="12" y="12" text-anchor="middle" fill="#cccccc" font-size="11">👁</text>
+  </g>
+
+  <!-- Items: only installed agents -->
+  <g font-size="13" fill="#cccccc">
+    <!-- Terminal -->
+    <rect x="80" y="100" width="440" height="26" fill="#094771" opacity="0.4"/>
+    <circle cx="100" cy="113" r="6" fill="#64748B"/>
+    <text x="116" y="118">Terminal</text>
+    <text x="420" y="118" fill="#858585" font-size="12">shell</text>
+
+    <!-- Claude -->
+    <rect x="80" y="126" width="440" height="26" fill="transparent"/>
+    <rect x="94" y="132" width="14" height="14" rx="3" fill="#FF8C00"/>
+    <text x="116" y="144">Claude</text>
+    <text x="420" y="144" fill="#858585" font-size="12">claude</text>
+
+    <!-- OpenCode -->
+    <rect x="80" y="152" width="440" height="26" fill="transparent"/>
+    <rect x="94" y="158" width="14" height="14" rx="3" fill="#3B82F6"/>
+    <text x="116" y="170">OpenCode</text>
+    <text x="420" y="170" fill="#858585" font-size="12">opencode</text>
+
+    <!-- Node (oh-my-pi, etc.) -->
+    <rect x="80" y="178" width="440" height="26" fill="transparent"/>
+    <rect x="94" y="184" width="14" height="14" rx="3" fill="#EC4899"/>
+    <text x="116" y="196">oh-my-pi</text>
+    <text x="420" y="196" fill="#858585" font-size="12">omp</text>
+
+    <!-- Cursor / dots -->
+    <text x="300" y="240" text-anchor="middle" fill="#5a5a5a" font-size="11" font-style="italic">… only installed agents shown …</text>
+  </g>
+</svg>
