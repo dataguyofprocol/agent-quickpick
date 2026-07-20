@@ -16,30 +16,33 @@ const AGENTS: Agent[] = [
 
 export function activate(context: vscode.ExtensionContext) {
   const disposable = vscode.commands.registerCommand("agentQuickpick.open", async () => {
-    const picks = AGENTS.map((a) => a.name);
-    const choice = await vscode.window.showQuickPick(picks, {
+    const items: (vscode.QuickPickItem & { agent: Agent })[] = AGENTS.map((agent) => ({
+      label: `$(terminal) ${agent.name}`,
+      description: agent.cmd,
+      iconPath: vscode.Uri.joinPath(context.extensionUri, "icons", agent.icon),
+      agent,
+    }));
+
+    const choice = await vscode.window.showQuickPick(items, {
       placeHolder: "Open agent terminal",
+      matchOnDescription: true,
     });
     if (!choice) {
       return;
     }
 
-    const agent = AGENTS.find((a) => a.name === choice);
-    if (!agent) {
-      return;
-    }
-
+    const agent = choice.agent;
     const iconUri = vscode.Uri.joinPath(context.extensionUri, "icons", agent.icon);
 
-    const terminal = await vscode.window.createTerminal({
+    const terminal = vscode.window.createTerminal({
       name: agent.name,
       iconPath: iconUri,
       color: new vscode.ThemeColor(agent.colorId),
       location: vscode.TerminalLocation.Editor,
     });
 
-    terminal.sendText(agent.cmd);
     terminal.show();
+    terminal.sendText(agent.cmd);
   });
 
   context.subscriptions.push(disposable);

@@ -1,65 +1,54 @@
 # Agent Quickpick
 
-A minimal VS Code extension that opens your favorite "agent" CLIs (e.g. `claude`, `opencode`, `omp`, `droid`) as terminals **inside the editor area**, each with its own **icon** and **theme color**.
-
-Press the keybinding, pick an agent from the quick-pick, and a new editor-tab terminal opens and runs the agent for you.
-
-## Features
-
-- One keybinding → quick-pick list of agents.
-- Opens the chosen agent **in the editor area** (not the panel).
-- Each agent gets a hand-made SVG icon + a distinct tab color.
-- Adding a new agent = one line of config + one SVG. No keybind edits.
+Minimal VS Code extension. Press a key, pick an agent CLI (`claude`, `opencode`, `omp`, `droid`), and it opens in a terminal **in the editor area** with its own icon and tab color.
 
 ## Default agents
 
-| Agent    | Command  | Color  | Icon            |
-|----------|----------|--------|-----------------|
-| claude   | `claude` | orange | asterisk/sparkle |
-| opencode | `opencode` | blue | terminal glyph  |
-| omp      | `omp`    | pink   | prompt `❯`      |
-| droid    | `droid`  | yellow | robot head      |
+| Agent    | Command    | Color  |
+|----------|------------|--------|
+| claude   | `claude`   | orange |
+| opencode | `opencode` | blue   |
+| omp      | `omp`      | pink   |
+| droid    | `droid`    | yellow |
 
-## Install / Run from source
+## Use
+
+Press **Cmd+Shift+A** (macOS) / **Ctrl+Shift+A** (Win/Linux), or run **Open Agent Terminal** from the command palette, then pick an agent.
+
+## Build & install
 
 ```bash
 npm install
-npm run compile   # or: npx tsc
+npm run compile        # build to out/
+npm run package        # produce agent-quickpick-<version>.vsix
+```
+
+Install the `.vsix`:
+
+```bash
+code --install-extension agent-quickpick-0.1.0.vsix
+```
+
+Run from source (no packaging):
+
+```bash
 code --extensionDevelopmentPath=.
 ```
 
-Then press **Cmd+Shift+A** (macOS) / **Ctrl+Shift+A** (Linux/Windows) and pick an agent.
+## Add an agent
 
-To build a packaged `.vsix`:
-
-```bash
-npx @vscode/vsce package
-```
-
-## Configure
-
-Open `src/extension.ts` and edit the `AGENTS` array:
+Edit the `AGENTS` array in `src/extension.ts`:
 
 ```ts
-const AGENTS: Agent[] = [
-  { name: "claude",   cmd: "claude",   icon: "claude.svg",   colorId: "agentQuickpick.claude" },
-  { name: "opencode", cmd: "opencode", icon: "opencode.svg", colorId: "agentQuickpick.opencode" },
-  { name: "omp",      cmd: "omp",      icon: "omp.svg",      colorId: "agentQuickpick.omp" },
-  { name: "droid",    cmd: "droid",    icon: "droid.svg",    colorId: "agentQuickpick.droid" },
-];
+{ name: "mytool", cmd: "mytool", icon: "mytool.svg", colorId: "agentQuickpick.mytool" }
 ```
 
-- `cmd` — the command run inside the terminal.
-- `icon` — SVG file in `icons/`.
-- `colorId` — a custom color registered in `package.json` under `contributes.colors`.
+Then drop `icons/mytool.svg` (use `fill="currentColor"` so the tab color drives it) and register a matching color in `package.json` under `contributes.colors`. Recompile.
 
-Adding an agent: add an entry here, drop an SVG in `icons/`, and register a matching color in `package.json`.
+## Notes
 
-## Notes / limitations
-
-- VS Code cannot theme a single terminal's **body**; `color` tints the **tab label and icon** only.
-- The keybinding is bound under `when: !terminalFocus` so it doesn't steal input while a terminal is active.
-- Icons are stylized, original artwork (licensing-safe), not official brand marks.
+- `color` tints the terminal **tab label and icon** only — VS Code can't theme a terminal's body.
+- Icons are original stylized artwork, not official brand marks.
 
 ## License
 

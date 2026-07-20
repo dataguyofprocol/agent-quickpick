@@ -1,5 +1,20 @@
+# Dependencies
 node_modules/
+
+# Build output
 out/
+*.tsbuildinfo
+
+# Packaged extension
 *.vsix
+
+# Test runner
 .vscode-test/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS / editor junk
 .DS_Store
+Thumbs.db
