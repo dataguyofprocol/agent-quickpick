@@ -5,6 +5,7 @@
   "version": "0.1.0",
   "publisher": "dataguyofprocol",
   "license": "MIT",
+  "icon": "icons/icon.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/dataguyofprocol/agent-quickpick.git"
