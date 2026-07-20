@@ -7,18 +7,20 @@ interface Agent {
   colorId: string;
 }
 
+// Order here = order shown in the quick pick. Terminal stays first.
 const AGENTS: Agent[] = [
-  { name: "claude", cmd: "claude", icon: "claude.svg", colorId: "agentQuickpick.claude" },
-  { name: "opencode", cmd: "opencode", icon: "opencode.svg", colorId: "agentQuickpick.opencode" },
-  { name: "omp", cmd: "omp", icon: "omp.svg", colorId: "agentQuickpick.omp" },
-  { name: "droid", cmd: "droid", icon: "droid.svg", colorId: "agentQuickpick.droid" },
+  { name: "Terminal", cmd: "", icon: "terminal.svg", colorId: "agentQuickpick.terminal" },
+  { name: "Claude Code", cmd: "claude", icon: "claude.svg", colorId: "agentQuickpick.claude" },
+  { name: "Opencode", cmd: "opencode", icon: "opencode.svg", colorId: "agentQuickpick.opencode" },
+  { name: "oh-my-pi", cmd: "omp", icon: "omp.svg", colorId: "agentQuickpick.omp" },
+  { name: "Droid", cmd: "droid", icon: "droid.svg", colorId: "agentQuickpick.droid" },
 ];
 
 export function activate(context: vscode.ExtensionContext) {
   const disposable = vscode.commands.registerCommand("agentQuickpick.open", async () => {
     const items: (vscode.QuickPickItem & { agent: Agent })[] = AGENTS.map((agent) => ({
-      label: `$(terminal) ${agent.name}`,
-      description: agent.cmd,
+      label: agent.name,
+      description: agent.cmd || "shell",
       iconPath: vscode.Uri.joinPath(context.extensionUri, "icons", agent.icon),
       agent,
     }));
@@ -42,7 +44,9 @@ export function activate(context: vscode.ExtensionContext) {
     });
 
     terminal.show();
-    terminal.sendText(agent.cmd);
+    if (agent.cmd) {
+      terminal.sendText(agent.cmd);
+    }
   });
 
   context.subscriptions.push(disposable);
