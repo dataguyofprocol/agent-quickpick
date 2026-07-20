@@ -1,8 +1,8 @@
 {
   "name": "agent-quickpick",
   "displayName": "Agent Quickpick",
-  "description": "Quick-pick launcher for agent terminals (claude, opencode, omp, droid) opened in the editor area.",
-  "version": "0.1.5",
+  "description": "Quick-pick launcher for agent terminals (claude, claude-proxy, claude-glm, opencode, omp, droid, cmd) opened in the editor area.",
+  "version": "0.1.9",
   "publisher": "dataguyofprocol",
   "license": "MIT",
   "icon": "icons/icon.png",
@@ -27,6 +27,9 @@
   "contributes": {
     "colors": [
       { "id": "agentQuickpick.claude", "description": "Claude agent terminal color", "defaults": { "dark": "#FF8C00", "light": "#FF8C00", "highContrast": "#FF8C00" } },
+      { "id": "agentQuickpick.claudeProxy", "description": "Claude Proxy agent terminal color", "defaults": { "dark": "#FF8C00", "light": "#FF8C00", "highContrast": "#FF8C00" } },
+      { "id": "agentQuickpick.claudeGlm", "description": "Claude GLM agent terminal color", "defaults": { "dark": "#6B7280", "light": "#6B7280", "highContrast": "#6B7280" } },
+      { "id": "agentQuickpick.commandcode", "description": "Command Code agent terminal color", "defaults": { "dark": "#A855F7", "light": "#A855F7", "highContrast": "#A855F7" } },
       { "id": "agentQuickpick.opencode", "description": "OpenCode agent terminal color", "defaults": { "dark": "#3B82F6", "light": "#3B82F6", "highContrast": "#3B82F6" } },
       { "id": "agentQuickpick.omp", "description": "OMP agent terminal color", "defaults": { "dark": "#EC4899", "light": "#EC4899", "highContrast": "#EC4899" } },
       { "id": "agentQuickpick.droid", "description": "Droid agent terminal color", "defaults": { "dark": "#EAB308", "light": "#EAB308", "highContrast": "#EAB308" } },

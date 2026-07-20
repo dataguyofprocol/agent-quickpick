@@ -1,15 +1,20 @@
 # Agent Quickpick
 
-Minimal extension for VS Code and its forks (**Trae, Cursor, Windsurf, Antigravity, …**). Press a key, pick an agent CLI (`claude`, `opencode`, `omp`, `droid`), and it opens in a terminal **in the editor area** with its own icon and tab color.
+Minimal extension for VS Code and its forks (**Trae, Cursor, Windsurf, Antigravity, …**). Press a key, pick an agent CLI (`claude`, `claude-proxy`, `claude-glm`, `opencode`, `omp`, `droid`, `cmd`), and it opens in a terminal **in the editor area** with its own icon and tab color.
 
 ## Default agents
 
-| Agent    | Command    | Color  |
-|----------|------------|--------|
-| claude   | `claude`   | orange |
-| opencode | `opencode` | blue   |
-| omp      | `omp`      | pink   |
-| droid    | `droid`    | yellow |
+| Agent         | Command         | Color   |
+|---------------|-----------------|---------|
+| claude        | `claude`        | orange  |
+| claude-proxy  | `claude-proxy`  | orange  |
+| claude-glm    | `claude-glm`    | grey    |
+| opencode      | `opencode`      | blue    |
+| omp           | `omp`           | pink    |
+| droid         | `droid`         | yellow  |
+| commandcode   | `cmd`           | purple  |
+
+> `claude-proxy` and `claude-glm` rely on zsh aliases/functions you define in your `~/.zshrc` (VS Code terminals run an interactive shell, so they resolve automatically).
 
 ## Use
 
