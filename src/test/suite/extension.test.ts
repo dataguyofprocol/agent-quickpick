@@ -176,6 +176,19 @@ suite("resolveColor", () => {
     assert.strictEqual(c!.id, "agentQuickpick.claude");
   });
 
+  test("declared-but-unused built-in color ids resolve (claudeProxy, claudeGlm)", () => {
+    // These ids are declared in contributes.colors and referenced by the
+    // README's custom-agent example, but no longer used by BUILTIN_AGENTS —
+    // they must still resolve, not silently fall back to undefined.
+    const proxy = resolveColor("agentQuickpick.claudeProxy");
+    assert.ok(proxy instanceof vscode.ThemeColor);
+    assert.strictEqual(proxy!.id, "agentQuickpick.claudeProxy");
+
+    const glm = resolveColor("agentQuickpick.claudeGlm");
+    assert.ok(glm instanceof vscode.ThemeColor);
+    assert.strictEqual(glm!.id, "agentQuickpick.claudeGlm");
+  });
+
   test("stock terminal.ansi* key → ThemeColor", () => {
     const c = resolveColor("terminal.ansiBlue");
     assert.ok(c instanceof vscode.ThemeColor);
