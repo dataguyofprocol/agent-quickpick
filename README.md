@@ -8,44 +8,52 @@ Works in VS Code, Cursor, Windsurf, Trae, Antigravity, Vodium — any VS Code fo
 
 ---
 
+<!-- TODO: replace with real hero capture -->
 <p align="center">
-  <em>Default view — only installed agents</em><br>
-  <img src="./.github/assets/quickpick-default.png" width="540" alt="Quick pick showing only installed agents">
+  <img src="./.github/assets/quickpick-default.png" width="540" alt="Quick pick showing installed agents">
 </p>
 
 ## How it works
 
-Out of the box the quick pick lists the standard coding-agent CLIs, each with its own icon and a themed tab color. Agents whose command isn't on your `PATH` are **hidden by default** — click the eye button in the title bar to reveal them under a "Not installed" divider.
+- Hit **⌘⇧A** / **Ctrl+Shift+A** and pick an agent from the list.
+- It opens in the **editor area** (not the bottom panel), so multiple agents sit side-by-side as editor tabs.
+- Each tab gets its **own icon and themed color** so you can tell them apart at a glance.
+- Agents whose command isn't on your `PATH` are **hidden by default** — click the **eye** in the title bar to reveal them under a "Not installed" divider.
 
+<!-- TODO: replace with real capture -->
 <p align="center">
-  <img src="./.github/assets/quickpick-revealed.png" width="540" alt="Quick pick with uninstalled agents revealed"><br>
-  <em>Revealed view — click the eye to toggle</em>
+  <img src="./.github/assets/quickpick-revealed.png" width="540" alt="Quick pick with uninstalled agents revealed">
 </p>
 
-Picking an agent opens it in the **editor area** (not the bottom panel), so multiple agents sit side-by-side as editor tabs, each color-coded:
-
+<!-- TODO: replace with real capture -->
 <p align="center">
   <img src="./.github/assets/terminals-side-by-side.png" width="640" alt="Two agent terminals side by side in the editor area">
 </p>
 
-### Built-in agents
+## Built-in agents
 
-| | Agent | Command | | Agent | Command |
-|---|---|---|---|---|---|
-| 🟧 | Claude | `claude` | 🟨 | Goose | `goose` |
-| 🟩 | Codex | `codex` | 🟪 | Crush | `crush` |
-| 🟦 | Gemini | `gemini` | 🟪 | Amp | `amp` |
-| 🟦 | Copilot | `gh copilot` | 🟨 | Droid | `droid` |
-| 🟦 | OpenCode | `opencode` | 🟦 | Qwen | `qwen` |
-| 🟪 | Command Code | `cmd` | 🟦 | Plandex | `plandex` |
-| 🟥 | Aider | `aider` | ⬜ | Grok | `grok` |
-| 🟪 | Cody | `cody` | 🟦 | Kilo | `kilo` |
-| 🟩 | Qodo | `qodo` | 🟪 | oh-my-pi | `omp` |
-| ⬜ | Terminal | *(plain shell)* | | | |
+| Agent | Command | Agent | Command |
+|---|---|---|---|
+| Claude | `claude` | Goose | `goose` |
+| Codex | `codex` | Crush | `crush` |
+| Gemini | `gemini` | Amp | `amp` |
+| Copilot | `gh copilot` | Droid | `droid` |
+| OpenCode | `opencode` | Qwen | `qwen` |
+| Command Code | `cmd` | Plandex | `plandex` |
+| Aider | `aider` | Grok | `grok` |
+| Cody | `cody` | Kilo | `kilo` |
+| Qodo | `qodo` | oh-my-pi | `omp` |
+| Terminal | *(plain shell)* | | |
 
-## Add your own agent
+## Install
 
-In `settings.json`:
+**From a `.vsix`** — grab the latest build from [GitHub Actions artifacts](https://github.com/dataguyofprocol/agent-quickpick/actions), then in your editor's **Extensions** panel click **⋯ → Install from VSIX…** and pick the file.
+
+**VS Code Marketplace — coming soon.**
+
+## Customizing
+
+The quick pick works exactly as intended out of the box — most people never need to touch settings. If you do want to add your own agent or hide a built-in one, configure it in `settings.json`:
 
 ```jsonc
 "agentQuickpick.agents": [
@@ -75,71 +83,13 @@ If all your agents rely on shell aliases (`claude-proxy`, etc.), turn detection 
 "agentQuickpick.detectInstalled": false
 ```
 
-## Install
-
-**From a built `.vsix`** (latest build is in [GitHub Actions artifacts](https://github.com/dataguyofprocol/agent-quickpick/actions)):
-
-```bash
-code     --install-extension agent-quickpick-0.2.2.vsix
-cursor   --install-extension agent-quickpick-0.2.2.vsix
-windsurf --install-extension agent-quickpick-0.2.2.vsix
-trae     --install-extension agent-quickpick-0.2.2.vsix
-```
-
-Or via any editor's UI: **Extensions** panel → **⋯** → **Install from VSIX…**
-
-**From source** (dev mode, no packaging):
-
-```bash
-code --extensionDevelopmentPath=.
-```
-
 ---
 
-## For maintainers & forks
-
-```bash
-npm install
-npm run compile     # tsc
-npm run watch       # tsc -w
-npm test            # runs the unit suite in a headless VS Code (35 tests)
-npm run package     # builds the .vsix
-```
-
-CI runs on every push across Ubuntu, macOS, and Windows — build, test, package, upload the vsix as an artifact.
-
-### Source layout
-
-- `src/extension.ts` — the extension: `BUILTIN_AGENTS`, `loadAgents`, `resolveIconPath`, `resolveColor`, `isCmdInstalled`, `isSafeBinaryName`.
-- `src/test/suite/extension.test.ts` — unit tests for the merge/icon/color/detection logic.
-- `icons/*.svg` — one brand icon per agent. House style: 24×24 viewBox, `rx=6` rounded background, white glyph on brand fill.
-- `package.json` — `contributes.configuration` (settings schema), `contributes.colors` (8 custom theme colors), command + keybinding.
-- `.github/assets/` — README mockups. **Replace with real PNGs/GIFs when you capture them** — see [CONTRIBUTING](#capturing-screenshots) below.
-
-### Adding a built-in agent
-
-1. Drop an SVG in `icons/` (24×24, house style).
-2. Add an entry to `BUILTIN_AGENTS` in `src/extension.ts`.
-3. Only if you want a brand-new color id: add a matching `contributes.colors` entry in `package.json`. Otherwise reuse a `terminal.ansi*` key.
-
-### Capturing screenshots
-
-The mockups in `.github/assets/*.svg` are placeholders. To replace with real captures:
-
-1. `code --extensionDevelopmentPath=.` with the GitHub Dark theme.
-2. Screenshot the quick pick in (a) default view, (b) revealed view, (c) two terminals side-by-side.
-3. For the demo GIF: record ⌘⇧A → pick Claude → ⌘⇧A → pick OpenCode → 6–10s, 15fps, ~600px wide.
-4. Drop them in `.github/assets/` and update the image links in this README.
-
-### Architecture notes
-
-- **Detection** runs `command -v <binary>` (or `where` on Windows) per agent, in parallel, with results cached for the session. Binary names are validated against a safe-character allowlist before exec — a malicious or typo'd setting can't inject shell commands.
-- **Icon resolution** falls back gracefully: codicon → existing file → `terminal` codicon. A broken icon path never breaks the quick pick.
-- **Colors** are a closed set (8 built-ins + 16 ANSI) because VS Code registers theme colors at publish time only.
+For maintainers, local dev, and architecture notes, see **[MAINTAINERS.md](./MAINTAINERS.md)**.
 
 ## Changelog
 
-See [CHANGELOG.md](./CHANGELOG.md). Notable: 0.2.0 added settings-driven agents, install detection with the eye toggle, and the test suite; 0.2.2 added the injection guard, parallelized detection, and CI.
+See [CHANGELOG.md](./CHANGELOG.md).
 
 ## License
 
