@@ -62,10 +62,23 @@ export const BUILTIN_AGENTS: AgentConfig[] = [
   { name: "oh-my-pi", cmd: "omp", icon: "omp.svg", color: "agentQuickpick.omp" },
 ];
 
-/** Built-in color ids declared in contributes.colors. */
-const BUILTIN_COLOR_IDS = new Set(
-  BUILTIN_AGENTS.map((a) => a.color).filter((c): c is string => !!c)
-);
+/**
+ * The custom `agentQuickpick.*` theme colors declared in package.json under
+ * `contributes.colors`. Kept as an explicit list (not derived from
+ * BUILTIN_AGENTS) so it stays in sync with what VS Code actually registers —
+ * claudeProxy/claudeGlm are declared (and usable from user settings) even
+ * though they're no longer used by any built-in agent.
+ */
+const BUILTIN_COLOR_IDS = new Set([
+  "agentQuickpick.claude",
+  "agentQuickpick.claudeProxy",
+  "agentQuickpick.claudeGlm",
+  "agentQuickpick.commandcode",
+  "agentQuickpick.opencode",
+  "agentQuickpick.omp",
+  "agentQuickpick.droid",
+  "agentQuickpick.terminal",
+]);
 
 /** Stock terminal tab colors VS Code ships. Recommended by the API docs. */
 const ANSI_COLOR_IDS = new Set([
