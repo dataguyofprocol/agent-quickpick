@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./icons/icon.png" width="96" alt="Agent Quickpick Icon">
+</p>
+
 # Agent Quickpick
 
 > **Zero setup.** Hit `⌘ShiftA` (or `Ctrl+Shift+A`), pick an agent, and get a dedicated terminal tab with its own icon and color theme right in your editor workspace.
