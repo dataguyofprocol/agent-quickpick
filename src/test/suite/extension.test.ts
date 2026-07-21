@@ -12,6 +12,7 @@ import {
   frecencyScore,
   sortByFrecency,
   launchText,
+  launchDelay,
   _resetInstallCacheForTests,
   _poisonInstallCacheForTests,
 } from "../../extension";
@@ -481,5 +482,25 @@ suite("launchText", () => {
       launchText({ cmd: "", launcher: "uvx", isPlainTerminal: true }),
       ""
     );
+  });
+});
+
+suite("launchDelay", () => {
+  test("agent terminal with positive delay → that value", () => {
+    assert.strictEqual(launchDelay(false, 300), 300);
+  });
+
+  test("agent terminal with 0 → 0", () => {
+    assert.strictEqual(launchDelay(false, 0), 0);
+  });
+
+  test("agent terminal with negative → 0 (clamped)", () => {
+    assert.strictEqual(launchDelay(false, -50), 0);
+  });
+
+  test("plain terminal → 0 regardless of configured delay", () => {
+    assert.strictEqual(launchDelay(true, 300), 0);
+    assert.strictEqual(launchDelay(true, 0), 0);
+    assert.strictEqual(launchDelay(true, 1000), 0);
   });
 });

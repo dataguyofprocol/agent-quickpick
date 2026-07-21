@@ -161,6 +161,12 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "Detect installed CLIs on your PATH and warn before opening an agent whose `cmd` isn't found. Disable if your agents rely on shell aliases/functions you don't want flagged."
+        },
+        "agentQuickpick.launchDelayMs": {
+          "type": "number",
+          "default": 300,
+          "minimum": 0,
+          "markdownDescription": "Milliseconds to wait after opening a terminal before sending the agent's launch command. Lets other extensions (e.g. the Python extension's virtualenv auto-activation) inject their startup commands first, so they land in the shell — not inside the agent's input box. Set `0` to send immediately. Increase if activation commands still leak into an agent like Claude."
         }
       }
     },
