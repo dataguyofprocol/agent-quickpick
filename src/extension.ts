@@ -402,8 +402,27 @@ export function launchText(agent: Pick<ResolvedAgent, "cmd" | "launcher" | "isPl
   return agent.launcher ? `${agent.launcher} ${agent.cmd}` : agent.cmd;
 }
 
+/**
+ * Ms to wait before sending the launch command. 0 means send immediately.
+ *
+ * Plain terminals never send text (see launchText), so the delay never
+ * applies to them. Non-positive configured delays are clamped to 0.
+ *
+ * The delay lets other extensions' terminal-startup injections — most
+ * notably the Python extension's `source .../venv/bin/activate` — land in
+ * the bare shell before the agent takes over stdin. Without it, those
+ * injections arrive after the agent's TUI has started and get fed into the
+ * agent's input box instead of the shell.
+ */
+export function launchDelay(isPlainTerminal: boolean, delayMs: number): number {
+  if (isPlainTerminal) {
+    return 0;
+  }
+  return delayMs > 0 ? delayMs : 0;
+}
+
 /** Create + show a terminal for the given resolved agent. */
-function launchAgent(agent: ResolvedAgent, state?: vscode.Memento): void {
+function launchAgent(agent: ResolvedAgent, state?: vscode.Memento, delayMs = 0): void {
   const terminal = vscode.window.createTerminal({
     name: agent.name,
     iconPath: agent.iconPath,
@@ -412,8 +431,22 @@ function launchAgent(agent: ResolvedAgent, state?: vscode.Memento): void {
   });
   terminal.show();
   const text = launchText(agent);
+  const delay = launchDelay(agent.isPlainTerminal, delayMs);
   if (text !== "") {
-    terminal.sendText(text);
+    if (delay > 0) {
+      // Defer sendText so other extensions' terminal-startup injections
+      // (venv activation, direnv, conda, …) land in the bare shell first.
+      // Guard: the terminal may be disposed during the window.
+      setTimeout(() => {
+        try {
+          terminal.sendText(text);
+        } catch {
+          // terminal disposed during delay — non-fatal
+        }
+      }, delay);
+    } else {
+      terminal.sendText(text);
+    }
   }
   // Record frecency (global, persists + syncs). Defensive: ignore if no state.
   if (state) {
@@ -441,6 +474,7 @@ export function activate(context: vscode.ExtensionContext) {
     const config = vscode.workspace.getConfiguration("agentQuickpick");
     const userAgents = config.get("agents");
     const detect = config.get<boolean>("detectInstalled", true);
+    const launchDelayMs = config.get<number>("launchDelayMs", 300);
 
     const configs = loadAgents(userAgents);
     const agents = await resolveAgents(configs, context.extensionUri, detect);
@@ -478,7 +512,7 @@ export function activate(context: vscode.ExtensionContext) {
         matchOnDescription: true,
       });
       if (choice?.agent) {
-        launchAgent(choice.agent, context.globalState);
+        launchAgent(choice.agent, context.globalState, launchDelayMs);
       }
       return;
     }
@@ -527,7 +561,7 @@ export function activate(context: vscode.ExtensionContext) {
       const sel = qp.selectedItems[0];
       if (sel?.agent) {
         qp.hide();
-        launchAgent(sel.agent, context.globalState);
+        launchAgent(sel.agent, context.globalState, launchDelayMs);
       }
     });
 

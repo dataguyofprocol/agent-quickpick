@@ -88,6 +88,14 @@ If all your agents rely on shell aliases (`claude-proxy`, etc.), turn detection 
 "agentQuickpick.detectInstalled": false
 ```
 
+### Startup commands leaking into the agent's input box
+
+If you see a line like `source …/venv/bin/activate` appear inside Claude's (or any agent's) input box on launch, it's another extension's terminal-startup injection arriving *after* the agent's TUI has taken over stdin. By default Agent Quickpick waits **300 ms** after opening a terminal before sending the launch command, so those injections land in the bare shell first. Tune it:
+
+```jsonc
+"agentQuickpick.launchDelayMs": 500    // increase if activation still leaks; 0 to send immediately
+```
+
 ---
 
 For maintainers, local dev, and architecture notes, see **[MAINTAINERS.md](./MAINTAINERS.md)**.
