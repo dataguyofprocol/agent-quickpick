@@ -1,14 +1,16 @@
 <p align="center">
-  <img src="./icons/icon.png" width="128" alt="Agent Quickpick Icon">
+  <img src="./icons/icon.png" width="96" alt="Agent Quickpick Icon">
 </p>
 
-# Agent Quickpick
+<h1 align="center">Agent Quickpick</h1>
 
-![CI](https://github.com/dataguyofprocol/agent-quickpick/actions/workflows/ci.yml/badge.svg)
+<p align="center">
+  One quick pick for every terminal coding-agent CLI. Hit <b>⌘⇧A</b> / <b>Ctrl+Shift+A</b>, pick an agent, and launch it in an editor tab with its icon and color theme.
+</p>
 
-One quick pick for every terminal coding-agent CLI. Hit **⌘⇧A** / **Ctrl+Shift+A**, pick an agent, get a terminal in the editor area with its own icon and tab color.
-
-Works in VS Code, Cursor, Windsurf, Trae, Antigravity, Vodium — any VS Code fork.
+<p align="center">
+  <a href="https://github.com/dataguyofprocol/agent-quickpick/actions"><img src="https://github.com/dataguyofprocol/agent-quickpick/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+</p>
 
 ---
 
@@ -16,15 +18,20 @@ Works in VS Code, Cursor, Windsurf, Trae, Antigravity, Vodium — any VS Code fo
   <img src="./.github/assets/demo.gif" width="100%" alt="Agent Quickpick Demo">
 </p>
 
-## How it works
+---
 
-- Hit **⌘⇧A** / **Ctrl+Shift+A** and pick an agent from the list.
-- It opens in the **editor area** (not the bottom panel), so multiple agents sit side-by-side as editor tabs.
-- Each tab gets its **own icon and themed color** so you can tell them apart at a glance.
-- Agents whose command isn't on your `PATH` are **hidden by default** — click the **eye** in the title bar to reveal them under a "Not installed" divider.
-- Your **most-used agents float to the top** automatically (frecency sorting). It's global, syncs across machines via Settings Sync, and never-launched agents keep the curated order.
+Works in **VS Code**, **Cursor**, **Windsurf**, **Trae**, **Antigravity**, **Vodium**, or any VS Code fork.
+
+## Features
+
+- **Editor-area terminals**: Opens agents as editor tabs (instead of down in the bottom panel), making it easy to split editors and run agents side-by-side.
+- **Icons & theme colors**: Each agent gets a dedicated icon and tab color (Claude orange, OpenCode blue, etc.) so you can tell them apart at a glance.
+- **PATH detection & hidden state**: Uninstalled agents stay hidden by default. Click the eye icon in the quick pick bar to reveal them under a "Not installed" section.
+- **Frecency sorting**: Agents you launch most often float to the top automatically. Order syncs across machines via Settings Sync.
 
 ## Built-in agents
+
+Out of the box support for 19 CLI agents:
 
 | Agent | Command | Agent | Command |
 |---|---|---|---|
@@ -39,67 +46,61 @@ Works in VS Code, Cursor, Windsurf, Trae, Antigravity, Vodium — any VS Code fo
 | Qodo | `qodo` | oh-my-pi | `omp` |
 | Terminal | *(plain shell)* | | |
 
-## Install
+## Installation
 
-**From a `.vsix`** — grab the latest build from [GitHub Actions artifacts](https://github.com/dataguyofprocol/agent-quickpick/actions), then in your editor's **Extensions** panel click **⋯ → Install from VSIX…** and pick the file.
+1. Grab the latest `.vsix` from [GitHub Actions artifacts](https://github.com/dataguyofprocol/agent-quickpick/actions).
+2. In VS Code, open the Extensions panel (`⌘ShiftX` / `CtrlShiftX`).
+3. Click `⋯` in the top right → **Install from VSIX…** and pick the downloaded file.
 
-**VS Code Marketplace — coming soon.**
+*(VS Code Marketplace listing coming soon.)*
 
 ## Customizing
 
-The quick pick works exactly as intended out of the box — most people never need to touch settings. If you do want to add your own agent or hide a built-in one, configure it in `settings.json`:
+No configuration is needed out of the box. To add custom agents or tweak built-ins, edit `agentQuickpick.agents` in `settings.json`:
 
 ```jsonc
 "agentQuickpick.agents": [
   {
     "name": "Claude GLM",
     "cmd": "claude-glm",
-    "icon": "claude-glm.svg",              // bundled filename, absolute path, or codicon id
-    "color": "agentQuickpick.claudeGlm"     // built-in id or terminal.ansi*
+    "icon": "claude-glm.svg",              // bundled SVG filename, absolute path, or codicon ID
+    "color": "agentQuickpick.claudeGlm"     // built-in color ID or terminal.ansi* key
   },
   {
     "name": "Aider (uvx)",
     "cmd": "aider",
-    "launcher": "uvx",                      // optional prefix binary; probes `uvx` on PATH, runs `uvx aider`
+    "launcher": "uvx",                      // probes `uvx` on PATH, runs `uvx aider`
     "icon": "aider.svg"
   },
-  { "name": "Droid", "hidden": true }       // hides a built-in
+  { "name": "Droid", "hidden": true }       // hides a built-in agent
 ]
 ```
 
+### Settings reference
+
 | Field | Required | Notes |
 |---|---|---|
-| `name` | yes | Display name. |
-| `cmd` | no | Shell command. Empty = plain terminal. Aliases/functions work (VS Code terminals are interactive). |
-| `launcher` | no | Prefix binary (`uvx`, `npx`, `pipx`). When set, detection probes this binary on PATH and the terminal runs `${launcher} ${cmd}`. Useful for package-manager-only agents. |
-| `icon` | no | Codicon id (`rocket`, `beaker`, `hubot`), absolute SVG/PNG path, or bundled filename. Missing file → `terminal` codicon fallback. |
-| `color` | no | Built-in id (`agentQuickpick.claude`, …) or stock `terminal.ansi*` key. Invalid → no tab color. |
-| `hidden` | no | `true` hides a built-in. |
+| `name` | Yes | Display name in the quick pick and terminal tab. |
+| `cmd` | No | Command to run. Empty opens a plain shell. Shell functions and aliases work. |
+| `launcher` | No | Prefix binary (`uvx`, `npx`, `pipx`). Detection checks this on PATH and runs `${launcher} ${cmd}`. |
+| `icon` | No | Codicon ID (`rocket`, `beaker`), absolute file path, or bundled SVG filename. Defaults to `terminal`. |
+| `color` | No | Built-in color ID (`agentQuickpick.claude`) or `terminal.ansi*` key. |
+| `hidden` | No | Set `true` to hide an agent. |
 
-> **Why can't my custom agent get a brand-new color?** VS Code only registers theme colors at publish time, so user-added agents pick from the 8 built-in ids + 16 `terminal.ansi*` keys (24 theme-aware options). Icons have no such limit.
+### Notes
 
-If all your agents rely on shell aliases (`claude-proxy`, etc.), turn detection off so they all show:
-
-```jsonc
-"agentQuickpick.detectInstalled": false
-```
-
-### Startup commands leaking into the agent's input box
-
-If you see a line like `source …/venv/bin/activate` appear inside Claude's (or any agent's) input box on launch, it's another extension's terminal-startup injection arriving *after* the agent's TUI has taken over stdin. By default Agent Quickpick waits **300 ms** after opening a terminal before sending the launch command, so those injections land in the bare shell first. Tune it:
-
-```jsonc
-"agentQuickpick.launchDelayMs": 500    // increase if activation still leaks; 0 to send immediately
-```
+- **Custom colors for user agents**: VS Code requires theme colors to be registered statically at publish time. Custom agents can choose from the 8 built-in agent color IDs + 16 `terminal.ansi*` keys (24 theme-aware colors total). Icons have no such limit.
+- **Using shell aliases**: If your agent commands rely on shell functions or aliases that aren't binaries on `PATH`, turn off detection so they aren't hidden:
+  ```jsonc
+  "agentQuickpick.detectInstalled": false
+  ```
+- **Terminal auto-activation leaks**: If a virtualenv activation script (e.g. from the Python extension) bleeds into an agent's prompt on launch, adjust the startup delay to let activation finish first:
+  ```jsonc
+  "agentQuickpick.launchDelayMs": 500    // default 300ms; set 0 to disable
+  ```
 
 ---
 
-For maintainers, local dev, and architecture notes, see **[MAINTAINERS.md](./MAINTAINERS.md)**.
-
-## Changelog
-
-See [CHANGELOG.md](./CHANGELOG.md).
-
-## License
-
-MIT — see [LICENSE](./LICENSE). Icons are original stylized artwork, not official brand marks.
+- Maintainers & local dev: [MAINTAINERS.md](./MAINTAINERS.md)
+- Release notes: [CHANGELOG.md](./CHANGELOG.md)
+- License: [MIT](./LICENSE)
