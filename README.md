@@ -13,9 +13,7 @@ Works in VS Code, Cursor, Windsurf, Trae, Antigravity, Vodium — any VS Code fo
 ---
 
 <p align="center">
-  <video src="./.github/assets/demo.mp4" width="100%" controls muted autoplay loop>
-    Agent Quickpick Demo
-  </video>
+  <img src="./.github/assets/demo.gif" width="100%" alt="Agent Quickpick Demo">
 </p>
 
 ## How it works
