@@ -15,6 +15,14 @@ export interface AgentConfig {
   icon?: string;
   color?: string;
   hidden?: boolean;
+  /**
+   * Internal, computed by loadAgents — true when the entry came from the
+   * user's `agentQuickpick.agents` setting (not a built-in). User entries skip
+   * install detection: the user added them on purpose (often shell aliases
+   * that a non-interactive `command -v` probe can't see), so they always show.
+   * Not intended to be set in settings.json.
+   */
+  userDefined?: boolean;
 }
 
 /**
@@ -189,10 +197,11 @@ export function loadAgents(userAgents: unknown): AgentConfig[] {
   }
 
   // Then user entries (override by name, append new ones at the end).
+  // Mark them userDefined so resolution can skip install detection for them.
   if (Array.isArray(userAgents)) {
     for (const raw of userAgents) {
       if (raw && typeof raw === "object") {
-        add(raw as AgentConfig);
+        add({ ...(raw as AgentConfig), userDefined: true });
       }
     }
   }
@@ -365,7 +374,9 @@ async function resolveAgents(
     configs.map(async (c) => {
       const cmd = (c.cmd ?? "").trim();
       const launcher = (c.launcher ?? "").trim();
-      const installed = detect ? await isCmdInstalled(cmd, launcher) : true;
+      // User-defined entries skip detection (aliases aren't on PATH); built-ins
+      // are probed only when detection is enabled.
+      const installed = detect && !c.userDefined ? await isCmdInstalled(cmd, launcher) : true;
       return {
         name: c.name,
         cmd,

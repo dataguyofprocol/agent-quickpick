@@ -112,6 +112,23 @@ suite("loadAgents", () => {
     assert.strictEqual(mine!.launcher, "npx");
   });
 
+  test("user-added entries are marked userDefined; built-ins are not", () => {
+    const agents = loadAgents([{ name: "Claude Proxy", cmd: "claude-proxy" }]);
+    const proxy = agents.find((a) => a.name === "Claude Proxy");
+    assert.ok(proxy, "user entry should be present");
+    assert.strictEqual(proxy!.userDefined, true);
+    const claude = agents.find((a) => a.name === "Claude");
+    assert.ok(claude, "built-in Claude should be present");
+    assert.notStrictEqual(claude!.userDefined, true);
+  });
+
+  test("overriding a built-in by name marks it userDefined (always shown)", () => {
+    const agents = loadAgents([{ name: "Claude", cmd: "claude-glm" }]);
+    const claude = agents.find((a) => a.name.toLowerCase() === "claude");
+    assert.ok(claude);
+    assert.strictEqual(claude!.userDefined, true);
+  });
+
   test("built-in Crush ships with uvx launcher", () => {
     const agents = loadAgents(undefined);
     const crush = agents.find((a) => a.name === "Crush");
