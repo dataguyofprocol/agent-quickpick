@@ -23,7 +23,7 @@ CI runs on every push across Ubuntu, macOS, and Windows — build, test, package
 ## Adding a built-in agent
 
 1. Drop an SVG in `icons/` (24×24, house style).
-2. Add an entry to `BUILTIN_AGENTS` in `src/extension.ts`. Set `launcher` if the agent runs via a package manager (e.g. `uvx crush`).
+2. Add an entry to `BUILTIN_AGENTS` in `src/extension.ts`. Set `launcher` only if the agent is genuinely invoked through a package-fetching launcher (e.g. `uvx aider`, `npx <pkg>`); otherwise leave it unset so detection probes the binary on PATH directly. Do NOT set `launcher` just because a tool *can* be installed via a package manager — only when the launcher is the required invocation.
 3. Only if you want a brand-new color id: add a matching `contributes.colors` entry in `package.json`. Otherwise reuse a `terminal.ansi*` key.
 
 ## Capturing screenshots

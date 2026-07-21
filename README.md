@@ -33,7 +33,7 @@ Works in VS Code, Cursor, Windsurf, Trae, Antigravity, Vodium — any VS Code fo
 | Agent | Command | Agent | Command |
 |---|---|---|---|
 | Claude | `claude` | Goose | `goose` |
-| Codex | `codex` | Crush | `uvx crush` |
+| Codex | `codex` | Crush | `crush` |
 | Gemini | `gemini` | Amp | `amp` |
 | Copilot | `gh copilot` | Droid | `droid` |
 | OpenCode | `opencode` | Qwen | `qwen` |
@@ -62,10 +62,10 @@ The quick pick works exactly as intended out of the box — most people never ne
     "color": "agentQuickpick.claudeGlm"     // built-in id or terminal.ansi*
   },
   {
-    "name": "Crush (dev)",
-    "cmd": "crush",
-    "launcher": "uvx",                      // optional prefix binary; probes `uvx` on PATH, runs `uvx crush`
-    "icon": "crush.svg"
+    "name": "Aider (uvx)",
+    "cmd": "aider",
+    "launcher": "uvx",                      // optional prefix binary; probes `uvx` on PATH, runs `uvx aider`
+    "icon": "aider.svg"
   },
   { "name": "Droid", "hidden": true }       // hides a built-in
 ]

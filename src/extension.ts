@@ -61,7 +61,7 @@ export const BUILTIN_AGENTS: AgentConfig[] = [
   { name: "OpenCode", cmd: "opencode", icon: "opencode.svg", color: "agentQuickpick.opencode" },
   { name: "Aider", cmd: "aider", icon: "aider.svg", color: "terminal.ansiRed" },
   { name: "Goose", cmd: "goose", icon: "goose.svg", color: "terminal.ansiYellow" },
-  { name: "Crush", cmd: "crush", launcher: "uvx", icon: "crush.svg", color: "terminal.ansiMagenta" },
+  { name: "Crush", cmd: "crush", icon: "crush.svg", color: "terminal.ansiMagenta" },
   { name: "Amp", cmd: "amp", icon: "amp.svg", color: "terminal.ansiBrightMagenta" },
   { name: "Droid", cmd: "droid", icon: "droid.svg", color: "agentQuickpick.droid" },
   { name: "Qwen", cmd: "qwen", icon: "qwen.svg", color: "terminal.ansiCyan" },

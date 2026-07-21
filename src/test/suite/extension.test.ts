@@ -129,12 +129,14 @@ suite("loadAgents", () => {
     assert.strictEqual(claude!.userDefined, true);
   });
 
-  test("built-in Crush ships with uvx launcher", () => {
+  test("built-in Crush is a plain binary with no launcher", () => {
     const agents = loadAgents(undefined);
     const crush = agents.find((a) => a.name === "Crush");
     assert.ok(crush, "Crush should be a built-in");
-    assert.strictEqual(crush!.launcher, "uvx");
     assert.strictEqual(crush!.cmd, "crush");
+    // Crush is a Go binary distributed via brew/npm/go/apt — not a uvx/PyPI
+    // package. Detection must probe `crush` itself, not a launcher.
+    assert.ok(!crush!.launcher, "Crush must not carry a launcher");
   });
 });
 
@@ -462,8 +464,8 @@ suite("launchText", () => {
 
   test("launcher prefixes the cmd", () => {
     assert.strictEqual(
-      launchText({ cmd: "crush", launcher: "uvx", isPlainTerminal: false }),
-      "uvx crush"
+      launchText({ cmd: "aider", launcher: "uvx", isPlainTerminal: false }),
+      "uvx aider"
     );
   });
 
