@@ -10,6 +10,8 @@ import * as fs from "fs";
 export interface AgentConfig {
   name: string;
   cmd?: string;
+  /** Optional prefix binary (e.g. "uvx", "npx", "pipx"). */
+  launcher?: string;
   icon?: string;
   color?: string;
   hidden?: boolean;
@@ -22,6 +24,7 @@ export interface AgentConfig {
 export interface ResolvedAgent {
   name: string;
   cmd: string;
+  launcher: string;
   iconPath: vscode.IconPath;
   color?: vscode.ThemeColor;
   installed: boolean;
@@ -50,7 +53,7 @@ export const BUILTIN_AGENTS: AgentConfig[] = [
   { name: "OpenCode", cmd: "opencode", icon: "opencode.svg", color: "agentQuickpick.opencode" },
   { name: "Aider", cmd: "aider", icon: "aider.svg", color: "terminal.ansiRed" },
   { name: "Goose", cmd: "goose", icon: "goose.svg", color: "terminal.ansiYellow" },
-  { name: "Crush", cmd: "crush", icon: "crush.svg", color: "terminal.ansiMagenta" },
+  { name: "Crush", cmd: "crush", launcher: "uvx", icon: "crush.svg", color: "terminal.ansiMagenta" },
   { name: "Amp", cmd: "amp", icon: "amp.svg", color: "terminal.ansiBrightMagenta" },
   { name: "Droid", cmd: "droid", icon: "droid.svg", color: "agentQuickpick.droid" },
   { name: "Qwen", cmd: "qwen", icon: "qwen.svg", color: "terminal.ansiCyan" },
@@ -89,6 +92,72 @@ const ANSI_COLOR_IDS = new Set([
 ]);
 
 export const ALLOWED_COLORS = new Set<string>([...BUILTIN_COLOR_IDS, ...ANSI_COLOR_IDS]);
+
+/**
+ * Frecency: a score combining launch count and recency, used to sort the
+ * quick-pick list so a user's most-used agents float to the top while
+ * never-launched agents keep the curated order. Roughly a 10-day half-life.
+ *
+ * Stored in globalState (persists across restarts, syncs across machines via
+ * Settings Sync) as { [lowercaseName]: { c: number, t: number } }.
+ */
+export interface FrecencyEntry {
+  /** launch count */
+  c: number;
+  /** last-used epoch ms */
+  t: number;
+}
+export type FrecencyMap = Record<string, FrecencyEntry>;
+
+const FRECENCY_KEY = "frecency.v1";
+const FRECENCY_HALF_LIFE_DAYS = 10;
+
+/**
+ * Pure score function. `now` is injected so tests don't depend on wall clock.
+ * Returns 0 for never-launched agents (count === 0).
+ */
+export function frecencyScore(count: number, lastUsedMs: number, now: number): number {
+  if (count <= 0) {
+    return 0;
+  }
+  const ageDays = Math.max(0, (now - lastUsedMs) / 86_400_000);
+  // count × 2^(-age/halfLife) — equivalent to count × exp(-age × ln2 / halfLife).
+  const decay = Math.pow(2, -ageDays / FRECENCY_HALF_LIFE_DAYS);
+  return count * decay;
+}
+
+/** Read the frecency map from globalState (defensive against bad shapes). */
+function readFrecency(state: vscode.Memento): FrecencyMap {
+  const raw = state.get<unknown>(FRECENCY_KEY);
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    return raw as FrecencyMap;
+  }
+  return {};
+}
+
+/** Increment an agent's launch count + last-used timestamp in globalState. */
+export function recordLaunch(state: vscode.Memento, name: string, now: number): void {
+  const map = readFrecency(state);
+  const key = name.toLowerCase();
+  const prev = map[key];
+  map[key] = { c: (prev?.c ?? 0) + 1, t: now };
+  state.update(FRECENCY_KEY, map);
+}
+
+/**
+ * Stable sort by frecency score desc; agents with score 0 keep their input
+ * order (so the curated order is preserved for never-launched agents).
+ */
+export function sortByFrecency<T>(
+  items: T[],
+  scoreOf: (item: T) => number
+): T[] {
+  // Decorated stable sort: keep original index as tiebreaker.
+  return items
+    .map((item, idx) => ({ item, idx, score: scoreOf(item) }))
+    .sort((a, b) => (b.score - a.score) || (a.idx - b.idx))
+    .map((d) => d.item);
+}
 
 /**
  * Merge built-in defaults with the user's `agentQuickpick.agents` setting.
@@ -208,12 +277,23 @@ export function resolveColor(color: unknown): vscode.ThemeColor | undefined {
 /**
  * Check whether a command appears on PATH (or is empty = plain terminal).
  * For multi-word commands like `gh copilot`, only the first token (the actual
- * binary) is checked. Binary names are validated against a safe-character
- * allowlist to prevent shell injection through user settings — anything
- * containing quotes, semicolons, pipes, etc. is treated as "not installed"
- * rather than being passed to the shell. Results are cached per session.
+ * binary) is checked. If `launcher` is set (e.g. "uvx", "npx"), that binary is
+ * probed instead of the first token of `cmd`. Binary names are validated
+ * against a safe-character allowlist to prevent shell injection through user
+ * settings — anything containing quotes, semicolons, pipes, etc. is treated as
+ * "not installed" rather than being passed to the shell.
+ *
+ * Results are cached per session with a 5-minute TTL, so an agent installed
+ * (or uninstalled) while the window is open is picked up on the next picker
+ * open after the TTL elapses. The cache is also cleared whenever any
+ * `agentQuickpick.*` setting changes.
  */
-const installCache = new Map<string, boolean>();
+interface InstallCacheEntry {
+  installed: boolean;
+  ts: number;
+}
+const INSTALL_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const installCache = new Map<string, InstallCacheEntry>();
 
 /** A safe binary name: letters, digits, dash, underscore, dot, plus only. */
 const SAFE_BINARY_RE = /^[A-Za-z0-9._-]+$/;
@@ -222,33 +302,54 @@ export function isSafeBinaryName(binary: string): boolean {
   return SAFE_BINARY_RE.test(binary);
 }
 
-export async function isCmdInstalled(cmd: string): Promise<boolean> {
-  const trimmed = (cmd ?? "").trim();
-  if (trimmed === "") {
-    return true; // plain terminal
+export async function isCmdInstalled(cmd: string, launcher?: string): Promise<boolean> {
+  // Empty command = plain terminal, always considered installed.
+  if ((cmd ?? "").trim() === "") {
+    return true;
   }
-  // For `gh copilot` etc., the installable binary is the first token.
-  const binary = trimmed.split(/\s+/)[0];
-  if (!isSafeBinaryName(binary)) {
-    // Refuse to pass unsafe input to the shell; treat as not installed.
-    return false;
+  // If a launcher (e.g. "uvx") is set, probe that binary on PATH instead of
+  // the first token of `cmd`. The full `${launcher} ${cmd}` is sent to the
+  // terminal at launch time.
+  let binary: string;
+  const trimmedLauncher = (launcher ?? "").trim();
+  if (trimmedLauncher !== "") {
+    if (!isSafeBinaryName(trimmedLauncher)) {
+      return false; // unsafe launcher → refuse to exec
+    }
+    binary = trimmedLauncher;
+  } else {
+    // For `gh copilot` etc., the installable binary is the first token.
+    binary = (cmd ?? "").trim().split(/\s+/)[0];
+    if (!isSafeBinaryName(binary)) {
+      return false; // unsafe input → refuse to exec
+    }
   }
-  if (installCache.has(binary)) {
-    return installCache.get(binary)!;
+  const cached = installCache.get(binary);
+  const now = Date.now();
+  if (cached && now - cached.ts < INSTALL_CACHE_TTL_MS) {
+    return cached.installed;
   }
   const checker = process.platform === "win32" ? `where "${binary}"` : `command -v "${binary}"`;
   return new Promise<boolean>((resolve) => {
     exec(checker, (error) => {
       const installed = !error;
-      installCache.set(binary, installed);
+      installCache.set(binary, { installed, ts: now });
       resolve(installed);
     });
   });
 }
 
-/** Reset the install cache. Exposed for tests. */
+/** Reset the install cache. Exposed for tests (also clears TTL timestamps). */
 export function _resetInstallCacheForTests(): void {
   installCache.clear();
+}
+
+/**
+ * Poison the cache with an explicit result + timestamp. Exposed for tests so
+ * we can verify the TTL read path without waiting for real time to elapse.
+ */
+export function _poisonInstallCacheForTests(binary: string, installed: boolean, ts: number): void {
+  installCache.set(binary, { installed, ts });
 }
 
 /**
@@ -263,10 +364,12 @@ async function resolveAgents(
   const resolved = await Promise.all(
     configs.map(async (c) => {
       const cmd = (c.cmd ?? "").trim();
-      const installed = detect ? await isCmdInstalled(cmd) : true;
+      const launcher = (c.launcher ?? "").trim();
+      const installed = detect ? await isCmdInstalled(cmd, launcher) : true;
       return {
         name: c.name,
         cmd,
+        launcher,
         iconPath: resolveIconPath(c.icon, extensionUri),
         color: resolveColor(c.color),
         installed,
@@ -277,8 +380,19 @@ async function resolveAgents(
   return resolved;
 }
 
+/**
+ * The text to send to the terminal to start the agent. Empty for the plain
+ * terminal (no command). When `launcher` is set, it prefixes `cmd`.
+ */
+export function launchText(agent: Pick<ResolvedAgent, "cmd" | "launcher" | "isPlainTerminal">): string {
+  if (agent.isPlainTerminal) {
+    return "";
+  }
+  return agent.launcher ? `${agent.launcher} ${agent.cmd}` : agent.cmd;
+}
+
 /** Create + show a terminal for the given resolved agent. */
-function launchAgent(agent: ResolvedAgent): void {
+function launchAgent(agent: ResolvedAgent, state?: vscode.Memento): void {
   const terminal = vscode.window.createTerminal({
     name: agent.name,
     iconPath: agent.iconPath,
@@ -286,12 +400,32 @@ function launchAgent(agent: ResolvedAgent): void {
     location: vscode.TerminalLocation.Editor,
   });
   terminal.show();
-  if (!agent.isPlainTerminal) {
-    terminal.sendText(agent.cmd);
+  const text = launchText(agent);
+  if (text !== "") {
+    terminal.sendText(text);
+  }
+  // Record frecency (global, persists + syncs). Defensive: ignore if no state.
+  if (state) {
+    try {
+      recordLaunch(state, agent.name, Date.now());
+    } catch {
+      // globalState write failures are non-fatal — don't block the launch.
+    }
   }
 }
 
 export function activate(context: vscode.ExtensionContext) {
+  // Clear the install-detection cache whenever any agentQuickpick.* setting
+  // changes, so toggling detectInstalled or editing the agents list is
+  // reflected immediately without a window reload.
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration("agentQuickpick")) {
+        installCache.clear();
+      }
+    })
+  );
+
   const disposable = vscode.commands.registerCommand("agentQuickpick.open", async () => {
     const config = vscode.workspace.getConfiguration("agentQuickpick");
     const userAgents = config.get("agents");
@@ -300,18 +434,28 @@ export function activate(context: vscode.ExtensionContext) {
     const configs = loadAgents(userAgents);
     const agents = await resolveAgents(configs, context.extensionUri, detect);
 
+    // Sort by frecency (launch count + recency) so the most-used agents float
+    // to the top. Stable sort → never-launched agents keep curated order.
+    const now = Date.now();
+    const frecency = readFrecency(context.globalState);
+    const sortedAgents = sortByFrecency(agents, (a) => {
+      const e = frecency[a.name.toLowerCase()];
+      return e ? frecencyScore(e.c, e.t, now) : 0;
+    });
+
     type Item = vscode.QuickPickItem & { agent?: ResolvedAgent };
 
     const toItem = (agent: ResolvedAgent): Item => ({
       label: agent.name,
-      description: agent.isPlainTerminal ? "shell" : agent.cmd,
+      // Show the actual command that will be sent (incl. launcher prefix).
+      description: agent.isPlainTerminal ? "shell" : launchText(agent) || agent.cmd,
       iconPath: agent.iconPath,
       agent,
     });
 
     // Plain Terminal is always considered installed; everything else depends on detection.
-    const installedItems = agents.filter((a) => a.installed).map(toItem);
-    const uninstalledItems = agents.filter((a) => !a.installed).map(toItem);
+    const installedItems = sortedAgents.filter((a) => a.installed).map(toItem);
+    const uninstalledItems = sortedAgents.filter((a) => !a.installed).map(toItem);
 
     // When detection is off (or nothing is uninstalled), we just show the flat list.
     const showToggle = detect && uninstalledItems.length > 0;
@@ -323,7 +467,7 @@ export function activate(context: vscode.ExtensionContext) {
         matchOnDescription: true,
       });
       if (choice?.agent) {
-        launchAgent(choice.agent);
+        launchAgent(choice.agent, context.globalState);
       }
       return;
     }
@@ -372,7 +516,7 @@ export function activate(context: vscode.ExtensionContext) {
       const sel = qp.selectedItems[0];
       if (sel?.agent) {
         qp.hide();
-        launchAgent(sel.agent);
+        launchAgent(sel.agent, context.globalState);
       }
     });
 

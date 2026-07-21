@@ -14,21 +14,21 @@ CI runs on every push across Ubuntu, macOS, and Windows — build, test, package
 
 ## Source layout
 
-- `src/extension.ts` — the extension: `BUILTIN_AGENTS`, `loadAgents`, `resolveIconPath`, `resolveColor`, `isCmdInstalled`, `isSafeBinaryName`.
-- `src/test/suite/extension.test.ts` — unit tests for the merge/icon/color/detection logic.
+- `src/extension.ts` — the extension: `BUILTIN_AGENTS`, `loadAgents`, `resolveIconPath`, `resolveColor`, `isCmdInstalled`, `isSafeBinaryName`, `frecencyScore`, `sortByFrecency`, `launchText`.
+- `src/test/suite/extension.test.ts` — unit tests for the merge/icon/color/detection/frecency logic.
 - `icons/*.svg` — one brand icon per agent. House style: 24×24 viewBox, `rx=6` rounded background, white glyph on brand fill.
 - `package.json` — `contributes.configuration` (settings schema), `contributes.colors` (8 custom theme colors), command + keybinding.
-- `.github/assets/` — README mockups. **Replace with real PNGs/GIFs when you capture them** — see [Capturing screenshots](#capturing-screenshots) below.
+- `.github/assets/` — README screenshots (real PNG captures).
 
 ## Adding a built-in agent
 
 1. Drop an SVG in `icons/` (24×24, house style).
-2. Add an entry to `BUILTIN_AGENTS` in `src/extension.ts`.
+2. Add an entry to `BUILTIN_AGENTS` in `src/extension.ts`. Set `launcher` if the agent runs via a package manager (e.g. `uvx crush`).
 3. Only if you want a brand-new color id: add a matching `contributes.colors` entry in `package.json`. Otherwise reuse a `terminal.ansi*` key.
 
 ## Capturing screenshots
 
-The mockups in `.github/assets/*.svg` are placeholders. To replace with real captures:
+To refresh the PNGs in `.github/assets/`:
 
 1. `code --extensionDevelopmentPath=.` with the GitHub Dark theme.
 2. Screenshot the quick pick in (a) default view, (b) revealed view, (c) two terminals side-by-side.
@@ -37,6 +37,7 @@ The mockups in `.github/assets/*.svg` are placeholders. To replace with real cap
 
 ## Architecture notes
 
-- **Detection** runs `command -v <binary>` (or `where` on Windows) per agent, in parallel, with results cached for the session. Binary names are validated against a safe-character allowlist before exec — a malicious or typo'd setting can't inject shell commands.
+- **Detection** runs `command -v <binary>` (or `where` on Windows) per agent, in parallel. Results are cached for 5 minutes (TTL); the cache is also cleared whenever any `agentQuickpick.*` setting changes. When `launcher` is set (e.g. `uvx`), the launcher binary is probed instead of the first token of `cmd`. Binary names are validated against a safe-character allowlist before exec — a malicious or typo'd setting can't inject shell commands.
+- **Frecency** scores each agent by `count × 2^(-ageDays/10)`; the quick-pick list is stable-sorted by that score so the most-used agents float to the top while never-launched agents keep curated order. Scores live in `globalState` (`frecency.v1`) so they persist across restarts and sync across machines via Settings Sync.
 - **Icon resolution** falls back gracefully: codicon → existing file → `terminal` codicon. A broken icon path never breaks the quick pick.
 - **Colors** are a closed set (8 built-ins + 16 ANSI) because VS Code registers theme colors at publish time only.

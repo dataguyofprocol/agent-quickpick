@@ -2,7 +2,7 @@
   "name": "agent-quickpick",
   "displayName": "Agent Quickpick",
   "description": "Quick-pick launcher for agent CLI terminals — Claude, Opencode, Claude Proxy, Claude GLM, oh-my-pi, Droid, Command Code, and your own — opened in the editor area with their own icon and tab color.",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "publisher": "dataguyofprocol",
   "license": "MIT",
   "icon": "icons/icon.png",
@@ -122,7 +122,7 @@
           "type": "array",
           "scope": "machine-overridable",
           "uniqueItems": true,
-          "markdownDescription": "Custom agents shown in the quick pick. Each entry: `{name, cmd, icon, color, hidden}`. Built-ins are included automatically; to hide a built-in, repeat its `name` here with `\"hidden\": true`.\n\n- **name** *(required)*: Display name (shown in quick pick + terminal tab).\n- **cmd**: Shell command to launch. Empty = plain terminal. Shell functions/aliases work since VS Code terminals are interactive.\n- **icon**: A built-in codicon id (`terminal`, `rocket`, `beaker`, `hubot`, …), an absolute path to an SVG/PNG on disk, or a filename bundled with the extension (`claude.svg`). Defaults to `terminal`.\n- **color**: A tab color — either an existing built-in color id (`agentQuickpick.claude`, `agentQuickpick.opencode`, …) or a stock `terminal.ansi*` key (`terminal.ansiBlue`, `terminal.ansiMagenta`, …). Optional.\n- **hidden**: `true` to hide this agent.",
+          "markdownDescription": "Custom agents shown in the quick pick. Each entry: `{name, cmd, launcher, icon, color, hidden}`. Built-ins are included automatically; to hide a built-in, repeat its `name` here with `\"hidden\": true`.\n\n- **name** *(required)*: Display name (shown in quick pick + terminal tab).\n- **cmd**: Shell command to launch. Empty = plain terminal. Shell functions/aliases work since VS Code terminals are interactive.\n- **launcher**: Optional prefix binary (e.g. `uvx`, `npx`, `pipx`). When set, detection probes this binary on PATH and the terminal launches `${launcher} ${cmd}`.\n- **icon**: A built-in codicon id (`terminal`, `rocket`, `beaker`, `hubot`, …), an absolute path to an SVG/PNG on disk, or a filename bundled with the extension (`claude.svg`). Defaults to `terminal`.\n- **color**: A tab color — either an existing built-in color id (`agentQuickpick.claude`, `agentQuickpick.opencode`, …) or a stock `terminal.ansi*` key (`terminal.ansiBlue`, `terminal.ansiMagenta`, …). Optional.\n- **hidden**: `true` to hide this agent.",
           "items": {
             "type": "object",
             "properties": {
@@ -133,6 +133,10 @@
               "cmd": {
                 "type": "string",
                 "description": "Shell command to launch. Empty = plain terminal. Shell functions/aliases work."
+              },
+              "launcher": {
+                "type": "string",
+                "description": "Optional prefix binary (e.g. 'uvx', 'npx', 'pipx'). When set, install detection checks this binary on PATH and the terminal launches `${launcher} ${cmd}`. Useful when an agent is only runnable via a package manager."
               },
               "icon": {
                 "type": "string",

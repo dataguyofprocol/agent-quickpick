@@ -8,7 +8,6 @@ Works in VS Code, Cursor, Windsurf, Trae, Antigravity, Vodium — any VS Code fo
 
 ---
 
-<!-- TODO: replace with real hero capture -->
 <p align="center">
   <img src="./.github/assets/quickpick-default.png" width="540" alt="Quick pick showing installed agents">
 </p>
@@ -19,13 +18,12 @@ Works in VS Code, Cursor, Windsurf, Trae, Antigravity, Vodium — any VS Code fo
 - It opens in the **editor area** (not the bottom panel), so multiple agents sit side-by-side as editor tabs.
 - Each tab gets its **own icon and themed color** so you can tell them apart at a glance.
 - Agents whose command isn't on your `PATH` are **hidden by default** — click the **eye** in the title bar to reveal them under a "Not installed" divider.
+- Your **most-used agents float to the top** automatically (frecency sorting). It's global, syncs across machines via Settings Sync, and never-launched agents keep the curated order.
 
-<!-- TODO: replace with real capture -->
 <p align="center">
   <img src="./.github/assets/quickpick-revealed.png" width="540" alt="Quick pick with uninstalled agents revealed">
 </p>
 
-<!-- TODO: replace with real capture -->
 <p align="center">
   <img src="./.github/assets/terminals-side-by-side.png" width="640" alt="Two agent terminals side by side in the editor area">
 </p>
@@ -35,7 +33,7 @@ Works in VS Code, Cursor, Windsurf, Trae, Antigravity, Vodium — any VS Code fo
 | Agent | Command | Agent | Command |
 |---|---|---|---|
 | Claude | `claude` | Goose | `goose` |
-| Codex | `codex` | Crush | `crush` |
+| Codex | `codex` | Crush | `uvx crush` |
 | Gemini | `gemini` | Amp | `amp` |
 | Copilot | `gh copilot` | Droid | `droid` |
 | OpenCode | `opencode` | Qwen | `qwen` |
@@ -63,6 +61,12 @@ The quick pick works exactly as intended out of the box — most people never ne
     "icon": "claude-glm.svg",              // bundled filename, absolute path, or codicon id
     "color": "agentQuickpick.claudeGlm"     // built-in id or terminal.ansi*
   },
+  {
+    "name": "Crush (dev)",
+    "cmd": "crush",
+    "launcher": "uvx",                      // optional prefix binary; probes `uvx` on PATH, runs `uvx crush`
+    "icon": "crush.svg"
+  },
   { "name": "Droid", "hidden": true }       // hides a built-in
 ]
 ```
@@ -71,6 +75,7 @@ The quick pick works exactly as intended out of the box — most people never ne
 |---|---|---|
 | `name` | yes | Display name. |
 | `cmd` | no | Shell command. Empty = plain terminal. Aliases/functions work (VS Code terminals are interactive). |
+| `launcher` | no | Prefix binary (`uvx`, `npx`, `pipx`). When set, detection probes this binary on PATH and the terminal runs `${launcher} ${cmd}`. Useful for package-manager-only agents. |
 | `icon` | no | Codicon id (`rocket`, `beaker`, `hubot`), absolute SVG/PNG path, or bundled filename. Missing file → `terminal` codicon fallback. |
 | `color` | no | Built-in id (`agentQuickpick.claude`, …) or stock `terminal.ansi*` key. Invalid → no tab color. |
 | `hidden` | no | `true` hides a built-in. |
