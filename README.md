@@ -1,30 +1,28 @@
 # Agent Quickpick
 
-Quick-pick launcher extension for terminal coding-agent CLIs in VS Code and compatible editor forks.
+> **Zero setup.** Hit `⌘ShiftA` (or `Ctrl+Shift+A`), pick an agent, and get a dedicated terminal tab with its own icon and color theme right in your editor workspace.
 
-Agent Quickpick opens CLI agent terminals directly in the editor workspace area—rather than the bottom panel—assigning each session a dedicated tab icon and color theme.
+Built by a dev for devs who run CLI coding agents in VS Code (or Cursor, Windsurf, Trae, Antigravity, Vodium) and got tired of juggling generic bottom-panel terminals.
 
-<p align="center">
-  <img src="./.github/assets/demo.gif" width="100%" alt="Agent Quickpick extension demonstration">
-</p>
+![Demo](./.github/assets/demo.gif)
 
-## Compatibility
+---
 
-- **VS Code**: `^1.85.0`
-- **Supported Editors**: VS Code, Cursor, Windsurf, Trae, Antigravity, Vodium, and other VS Code derivatives.
+## Why use it?
 
-## Key Behaviors
+- **Zero configuration required**: Works instantly out of the box. It probes your `PATH` automatically and shows you only the agent CLIs you actually have installed.
+- **Editor tabs, not bottom panel**: Terminals open as real editor tabs. Split them side-by-side or stacked to run Claude, Aider, and OpenCode simultaneously in the same window.
+- **Icons & theme colors out of the box**: Every agent (Claude, Gemini, Codex, Goose, Aider, etc.) gets a distinct icon and tab color so you can identify active sessions at a glance.
+- **Frecency sorting**: The agents you launch most float to the top automatically. Order syncs across machines via Settings Sync.
+- **Clean & non-intrusive**: Agents not found on your system stay hidden by default so your picker stays clean—click the eye icon in the title bar anytime to reveal them.
 
-- **Editor-Area Placement**: Terminal sessions instantiate as editor tab documents, enabling side-by-side split layouts and multi-agent workflows.
-- **Visual Distinction**: Dedicated SVG icon and theme color per agent CLI for instant visual identification across active editor tabs.
-- **PATH Detection & Filtering**: Uninstalled agents are hidden by default. The quick-pick title bar includes a toggle (eye icon) to inspect uninstalled CLIs under a "Not installed" section.
-- **Frecency Ranking**: Agent ordering uses a frecency algorithm (frequency + recency). Usage metadata synchronizes across devices via VS Code Settings Sync.
+---
 
-## Default Agent Registry
+## Supported agents (out of the box)
 
-Agent Quickpick includes preconfigured definitions for 19 CLI tools:
+No configuration needed—if the tool is on your `PATH`, Agent Quickpick detects it automatically:
 
-| Agent Name | Command | Agent Name | Command |
+| Agent | Command | Agent | Command |
 |---|---|---|---|
 | Claude | `claude` | Goose | `goose` |
 | Codex | `codex` | Crush | `crush` |
@@ -37,72 +35,55 @@ Agent Quickpick includes preconfigured definitions for 19 CLI tools:
 | Qodo | `qodo` | oh-my-pi | `omp` |
 | Terminal | *(plain shell)* | | |
 
-## Installation
+---
 
-### VSIX Installation
+## Quick Install
 
-1. Download the `.vsix` package from the [GitHub Actions Artifacts](https://github.com/dataguyofprocol/agent-quickpick/actions) of the latest build.
-2. In VS Code, navigate to **Extensions** (`Ctrl+Shift+X` / `Cmd+Shift+X`).
-3. Open the overflow menu (`⋯`) and select **Install from VSIX…**.
-4. Select the downloaded `.vsix` file.
+1. Download the latest `.vsix` from [GitHub Actions Artifacts](https://github.com/dataguyofprocol/agent-quickpick/actions).
+2. In VS Code, open Extensions (`⌘ShiftX` / `CtrlShiftX`).
+3. Click `⋯` (top right) → **Install from VSIX…** and select the file.
 
-*(VS Code Marketplace release pending.)*
+*(Submitting to the VS Code Marketplace soon!)*
 
-## Configuration
+---
 
-Custom agent definitions and overrides are configured via `agentQuickpick.agents` in `settings.json`.
+## Optional: Custom agents & tweaks
+
+Most developers never need to touch settings. But if you have custom scripts, package-manager launchers, or want to hide specific built-in agents, configure `agentQuickpick.agents` in `settings.json`:
 
 ```jsonc
-{
-  "agentQuickpick.agents": [
-    {
-      "name": "Claude GLM",
-      "cmd": "claude-glm",
-      "icon": "claude-glm.svg",
-      "color": "agentQuickpick.claudeGlm"
-    },
-    {
-      "name": "Aider (uvx)",
-      "cmd": "aider",
-      "launcher": "uvx",
-      "icon": "aider.svg"
-    },
-    {
-      "name": "Droid",
-      "hidden": true
-    }
-  ]
-}
+"agentQuickpick.agents": [
+  {
+    "name": "Claude GLM",
+    "cmd": "claude-glm",
+    "icon": "claude-glm.svg",
+    "color": "agentQuickpick.claudeGlm"
+  },
+  {
+    "name": "Aider (uvx)",
+    "cmd": "aider",
+    "launcher": "uvx",       // probes `uvx` on PATH, launches `uvx aider`
+    "icon": "aider.svg"
+  },
+  { "name": "Droid", "hidden": true }
+]
 ```
 
-### Agent Configuration Schema
+### Handy settings
 
-| Setting | Type | Required | Default | Description |
-|---|---|:---:|---|---|
-| `name` | `string` | Yes | — | Display label in quick-pick menu and terminal tab header. |
-| `cmd` | `string` | No | `""` | Shell command executed upon terminal creation. Empty string launches default interactive shell. |
-| `launcher` | `string` | No | — | Binary prefix (e.g., `uvx`, `npx`, `pipx`). PATH detection checks `launcher`; terminal executes `${launcher} ${cmd}`. |
-| `icon` | `string` | No | `"terminal"` | Codicon identifier (`rocket`, `beaker`), path to custom SVG/PNG file, or bundled icon filename. |
-| `color` | `string` | No | — | Registered theme color ID (`agentQuickpick.claude`) or standard ANSI key (`terminal.ansiBlue`). |
-| `hidden` | `boolean` | No | `false` | When `true`, suppresses the agent from the quick-pick list. Used to hide built-in agents. |
+- **Using shell aliases / functions**: If your agents rely on shell aliases rather than binaries on `PATH`, turn off detection so they aren't hidden:
+  ```jsonc
+  "agentQuickpick.detectInstalled": false
+  ```
+- **Terminal activation scripts leaking into prompt**: If virtualenv/conda activation scripts bleed into an agent's stdin on open, adjust `launchDelayMs` (default 300ms):
+  ```jsonc
+  "agentQuickpick.launchDelayMs": 500
+  ```
 
-### Global Extension Settings
+---
 
-| Setting | Type | Default | Description |
-|---|---|---|---|
-| `agentQuickpick.detectInstalled` | `boolean` | `true` | Probes system `PATH` for executable binaries and categorizes missing tools under uninstalled state. Set `false` when using shell aliases or functions. |
-| `agentQuickpick.launchDelayMs` | `number` | `300` | Delay in milliseconds before dispatching `cmd` to the terminal. Prevents terminal auto-activation scripts (e.g., Python venv / Conda) from bleeding into agent stdin. |
+## License & Notes
 
-## Technical Notes
-
-### Theme Color Scoping
-VS Code requires theme color contributions to be declared statically in `package.json` at publish time. Custom agents can assign any of the 8 extension-provided color IDs or 16 standard `terminal.ansi*` keys. SVG and PNG icons do not have restricted color palettes.
-
-### Shell Alias Resolution
-When `agentQuickpick.detectInstalled` is `true`, PATH detection resolves binary executables. Shell functions or aliases defined in `.zshrc` / `.bashrc` will fail binary resolution. Set `"agentQuickpick.detectInstalled": false` to disable binary validation.
-
-## Development & License
-
-- **Maintainer & Local Setup Guide**: [MAINTAINERS.md](./MAINTAINERS.md)
-- **Release History**: [CHANGELOG.md](./CHANGELOG.md)
-- **License**: [MIT](./LICENSE)
+- License: [MIT](./LICENSE) *(Icons are stylized original artwork)*
+- Maintenance & local setup notes: [MAINTAINERS.md](./MAINTAINERS.md)
+- Release history: [CHANGELOG.md](./CHANGELOG.md)
