@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./icons/icon.png" width="128" alt="Agent Quickpick Icon">
+</p>
+
 # Agent Quickpick
 
 ![CI](https://github.com/dataguyofprocol/agent-quickpick/actions/workflows/ci.yml/badge.svg)
@@ -9,7 +13,7 @@ Works in VS Code, Cursor, Windsurf, Trae, Antigravity, Vodium — any VS Code fo
 ---
 
 <p align="center">
-  <img src="./.github/assets/quickpick-default.png" width="540" alt="Quick pick showing installed agents">
+  <img src="./.github/assets/demo.gif" width="100%" alt="Agent Quickpick Demo">
 </p>
 
 ## How it works
@@ -19,14 +23,6 @@ Works in VS Code, Cursor, Windsurf, Trae, Antigravity, Vodium — any VS Code fo
 - Each tab gets its **own icon and themed color** so you can tell them apart at a glance.
 - Agents whose command isn't on your `PATH` are **hidden by default** — click the **eye** in the title bar to reveal them under a "Not installed" divider.
 - Your **most-used agents float to the top** automatically (frecency sorting). It's global, syncs across machines via Settings Sync, and never-launched agents keep the curated order.
-
-<p align="center">
-  <img src="./.github/assets/quickpick-revealed.png" width="540" alt="Quick pick with uninstalled agents revealed">
-</p>
-
-<p align="center">
-  <img src="./.github/assets/terminals-side-by-side.png" width="640" alt="Two agent terminals side by side in the editor area">
-</p>
 
 ## Built-in agents
 
