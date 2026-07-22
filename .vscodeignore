@@ -5,6 +5,8 @@
 .vscode-test/**
 node_modules/**
 src/**
+scripts/**
+icons/statusbar-glyph.svg
 tsconfig.json
 out/test/**
 **/*.map

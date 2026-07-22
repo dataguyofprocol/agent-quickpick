@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!-- Monochrome status-bar glyph: the 2x2 agent grid. Rendered single-color
+       (currentColor) as an icon font, so no fills/strokes/colors — one path. -->
+  <path d="M22 22 H58 V58 H22 Z M70 22 H106 V58 H70 Z M22 70 H58 V106 H22 Z M70 70 H106 V106 H70 Z"/>
+</svg>

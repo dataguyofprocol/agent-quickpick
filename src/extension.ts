@@ -421,10 +421,48 @@ export function launchDelay(isPlainTerminal: boolean, delayMs: number): number {
   return delayMs > 0 ? delayMs : 0;
 }
 
+/**
+ * Pick a terminal tab name that doesn't collide with already-open terminals.
+ * Bare-first, then " (2)", " (3)", … — matching VS Code's native convention.
+ * Numbers are reclaimed: if "Claude" is free again (its tab was closed) it's
+ * reused before "Claude (2)". Pure + injectable for testing.
+ */
+export function uniqueTerminalName(base: string, existing: Iterable<string>): string {
+  const taken = new Set<string>(existing);
+  if (!taken.has(base)) {
+    return base;
+  }
+  let n = 2;
+  while (taken.has(`${base} (${n})`)) {
+    n++;
+  }
+  return `${base} (${n})`;
+}
+
+/**
+ * Strip a trailing " (N)" collision counter from a terminal name, so
+ * "Claude (2)" → "Claude". Names without a counter are returned unchanged.
+ * Used to match a live terminal back to the agent that spawned it.
+ */
+export function baseTerminalName(name: string): string {
+  return name.replace(/ \(\d+\)$/, "");
+}
+
+/**
+ * True when a terminal name looks like one we launched — its base name (minus
+ * any " (N)" counter) matches a known agent name (case-insensitive). This is
+ * how the sessions list re-adopts terminals after a window reload, without any
+ * in-memory tracking.
+ */
+export function isSessionTerminal(terminalName: string, agentNames: Set<string>): boolean {
+  return agentNames.has(baseTerminalName(terminalName).toLowerCase());
+}
+
 /** Create + show a terminal for the given resolved agent. */
 function launchAgent(agent: ResolvedAgent, state?: vscode.Memento, delayMs = 0): void {
+  const openNames = vscode.window.terminals.map((t) => t.name);
   const terminal = vscode.window.createTerminal({
-    name: agent.name,
+    name: uniqueTerminalName(agent.name, openNames),
     iconPath: agent.iconPath,
     color: agent.color,
     location: vscode.TerminalLocation.Editor,
@@ -458,19 +496,55 @@ function launchAgent(agent: ResolvedAgent, state?: vscode.Memento, delayMs = 0):
   }
 }
 
-export function activate(context: vscode.ExtensionContext) {
-  // Clear the install-detection cache whenever any agentQuickpick.* setting
-  // changes, so toggling detectInstalled or editing the agents list is
-  // reflected immediately without a window reload.
-  context.subscriptions.push(
-    vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration("agentQuickpick")) {
-        installCache.clear();
-      }
-    })
+/**
+ * Show a quick pick of currently-running agent terminals (matched by name) and
+ * focus the chosen one. When nothing is running, falls through to the launcher.
+ * When sessions exist, a trailing "Launch new agent…" item re-enters the launcher.
+ */
+async function runSessions(context: vscode.ExtensionContext): Promise<void> {
+  const config = vscode.workspace.getConfiguration("agentQuickpick");
+  const configs = loadAgents(config.get("agents"));
+  const agentNames = new Set(configs.map((c) => c.name.toLowerCase()));
+
+  const sessions = vscode.window.terminals.filter((t) =>
+    isSessionTerminal(t.name, agentNames)
   );
 
-  const disposable = vscode.commands.registerCommand("agentQuickpick.open", async () => {
+  // Nothing running → skip the empty list, go straight to launching.
+  if (sessions.length === 0) {
+    return runLauncher(context);
+  }
+
+  type Item = vscode.QuickPickItem & { terminal?: vscode.Terminal; launch?: boolean };
+
+  const iconOf = (t: vscode.Terminal): vscode.IconPath | undefined => {
+    const opts = t.creationOptions as vscode.TerminalOptions;
+    return opts?.iconPath ?? new vscode.ThemeIcon("terminal");
+  };
+
+  const items: Item[] = sessions.map((t) => ({
+    label: t.name,
+    description: "running",
+    iconPath: iconOf(t),
+    terminal: t,
+  }));
+  items.push({ label: "", kind: vscode.QuickPickItemKind.Separator });
+  items.push({ label: "$(add) Launch new agent…", launch: true });
+
+  const choice = await vscode.window.showQuickPick(items, {
+    placeHolder: "Switch to a running agent",
+  });
+  if (!choice) {
+    return;
+  }
+  if (choice.launch) {
+    return runLauncher(context);
+  }
+  choice.terminal?.show();
+}
+
+/** The launcher quick pick — pick an agent, open a terminal for it. */
+async function runLauncher(context: vscode.ExtensionContext): Promise<void> {
     const config = vscode.workspace.getConfiguration("agentQuickpick");
     const userAgents = config.get("agents");
     const detect = config.get<boolean>("detectInstalled", true);
@@ -567,9 +641,51 @@ export function activate(context: vscode.ExtensionContext) {
 
     render();
     qp.show();
-  });
+}
 
-  context.subscriptions.push(disposable);
+export function activate(context: vscode.ExtensionContext) {
+  // Clear the install-detection cache whenever any agentQuickpick.* setting
+  // changes, so toggling detectInstalled or editing the agents list is
+  // reflected immediately without a window reload.
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration("agentQuickpick")) {
+        installCache.clear();
+      }
+    })
+  );
+
+  // Status bar button → shows running agent sessions (falls through to the
+  // launcher when none are running). Visibility follows
+  // agentQuickpick.showStatusBar (default true) and updates live on config change.
+  const statusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 0);
+  statusItem.command = "agentQuickpick.sessions";
+  statusItem.text = "$(agent-quickpick) Agent";
+  statusItem.tooltip = "Running agents — switch or launch";
+  const syncStatusBar = () => {
+    const show = vscode.workspace
+      .getConfiguration("agentQuickpick")
+      .get<boolean>("showStatusBar", true);
+    if (show) {
+      statusItem.show();
+    } else {
+      statusItem.hide();
+    }
+  };
+  syncStatusBar();
+  context.subscriptions.push(
+    statusItem,
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration("agentQuickpick.showStatusBar")) {
+        syncStatusBar();
+      }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("agentQuickpick.open", () => runLauncher(context)),
+    vscode.commands.registerCommand("agentQuickpick.sessions", () => runSessions(context))
+  );
 }
 
 export function deactivate() {}

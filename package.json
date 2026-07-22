@@ -2,7 +2,7 @@
   "name": "agent-quickpick",
   "displayName": "Agent Quickpick",
   "description": "Quick-pick launcher for agent CLI terminals — Claude, Opencode, Claude Proxy, Claude GLM, oh-my-pi, Droid, Command Code, and your own — opened in the editor area with their own icon and tab color.",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "publisher": "dataguyofprocol",
   "license": "MIT",
   "icon": "icons/icon.png",
@@ -37,10 +37,22 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "vscode:prepublish": "npm run compile",
+    "build:iconfont": "node scripts/build-icon-font.js",
     "package": "vsce package",
+    "publish:vscode": "vsce publish",
+    "publish:openvsx": "ovsx publish",
     "test": "node ./out/test/runTest.js"
   },
   "contributes": {
+    "icons": {
+      "agent-quickpick": {
+        "description": "Agent Quickpick status-bar glyph (2x2 agent grid)",
+        "default": {
+          "fontPath": "./icons/agent-quickpick.woff",
+          "fontCharacter": "\\E900"
+        }
+      }
+    },
     "colors": [
       {
         "id": "agentQuickpick.claude",
@@ -167,6 +179,11 @@
           "default": 300,
           "minimum": 0,
           "markdownDescription": "Milliseconds to wait after opening a terminal before sending the agent's launch command. Lets other extensions (e.g. the Python extension's virtualenv auto-activation) inject their startup commands first, so they land in the shell — not inside the agent's input box. Set `0` to send immediately. Increase if activation commands still leak into an agent like Claude."
+        },
+        "agentQuickpick.showStatusBar": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Show an **Agent** button in the status bar that opens the quick pick. Disable to keep the status bar uncluttered and rely on the keybinding (`Cmd/Ctrl+Shift+A`)."
         }
       }
     },
@@ -174,6 +191,10 @@
       {
         "command": "agentQuickpick.open",
         "title": "Open Agent Terminal"
+      },
+      {
+        "command": "agentQuickpick.sessions",
+        "title": "Show Running Agent Sessions"
       }
     ],
     "keybindings": [
@@ -191,6 +212,9 @@
     "@vscode/test-electron": "^2.5.2",
     "@vscode/vsce": "^3.2.1",
     "mocha": "^10.8.2",
+    "svg2ttf": "^6.1.0",
+    "svgicons2svgfont": "^16.0.0",
+    "ttf2woff": "^3.0.0",
     "typescript": "^5.7.2"
   }
 }

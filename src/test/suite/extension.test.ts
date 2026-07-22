@@ -13,6 +13,9 @@ import {
   sortByFrecency,
   launchText,
   launchDelay,
+  uniqueTerminalName,
+  baseTerminalName,
+  isSessionTerminal,
   _resetInstallCacheForTests,
   _poisonInstallCacheForTests,
 } from "../../extension";
@@ -502,5 +505,89 @@ suite("launchDelay", () => {
     assert.strictEqual(launchDelay(true, 300), 0);
     assert.strictEqual(launchDelay(true, 0), 0);
     assert.strictEqual(launchDelay(true, 1000), 0);
+  });
+});
+
+suite("uniqueTerminalName", () => {
+  test("no collision → bare base name", () => {
+    assert.strictEqual(uniqueTerminalName("Claude", []), "Claude");
+    assert.strictEqual(uniqueTerminalName("Claude", ["Codex", "Aider"]), "Claude");
+  });
+
+  test("base taken → (2)", () => {
+    assert.strictEqual(uniqueTerminalName("Claude", ["Claude"]), "Claude (2)");
+  });
+
+  test("base + (2) taken → (3)", () => {
+    assert.strictEqual(
+      uniqueTerminalName("Claude", ["Claude", "Claude (2)"]),
+      "Claude (3)"
+    );
+  });
+
+  test("reclaims bare name when it's free again", () => {
+    // "Claude" closed, only "Claude (2)" remains → next reuses bare "Claude".
+    assert.strictEqual(uniqueTerminalName("Claude", ["Claude (2)"]), "Claude");
+  });
+
+  test("reclaims lowest free numbered slot", () => {
+    // "Claude" and "Claude (3)" open, "(2)" was closed → fills the (2) gap.
+    assert.strictEqual(
+      uniqueTerminalName("Claude", ["Claude", "Claude (3)"]),
+      "Claude (2)"
+    );
+  });
+
+  test("distinct base names don't interfere", () => {
+    assert.strictEqual(
+      uniqueTerminalName("Codex", ["Claude", "Claude (2)"]),
+      "Codex"
+    );
+  });
+
+  test("accepts a Set as the existing-names iterable", () => {
+    assert.strictEqual(
+      uniqueTerminalName("Claude", new Set(["Claude"])),
+      "Claude (2)"
+    );
+  });
+});
+
+suite("baseTerminalName", () => {
+  test("strips a trailing counter", () => {
+    assert.strictEqual(baseTerminalName("Claude (2)"), "Claude");
+    assert.strictEqual(baseTerminalName("Claude (13)"), "Claude");
+  });
+
+  test("leaves un-numbered names unchanged", () => {
+    assert.strictEqual(baseTerminalName("Claude"), "Claude");
+    assert.strictEqual(baseTerminalName("oh-my-pi"), "oh-my-pi");
+  });
+
+  test("only strips a counter at the very end", () => {
+    assert.strictEqual(baseTerminalName("Claude (2) foo"), "Claude (2) foo");
+  });
+
+  test("does not strip parenthetical non-numbers", () => {
+    assert.strictEqual(baseTerminalName("Claude (dev)"), "Claude (dev)");
+  });
+});
+
+suite("isSessionTerminal", () => {
+  const names = new Set(["claude", "codex", "oh-my-pi"]);
+
+  test("matches a bare agent name (case-insensitive)", () => {
+    assert.strictEqual(isSessionTerminal("Claude", names), true);
+    assert.strictEqual(isSessionTerminal("CODEX", names), true);
+  });
+
+  test("matches a numbered session back to its agent", () => {
+    assert.strictEqual(isSessionTerminal("Claude (2)", names), true);
+    assert.strictEqual(isSessionTerminal("oh-my-pi (5)", names), true);
+  });
+
+  test("rejects unrelated terminal names", () => {
+    assert.strictEqual(isSessionTerminal("zsh", names), false);
+    assert.strictEqual(isSessionTerminal("node", names), false);
   });
 });
