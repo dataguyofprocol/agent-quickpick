@@ -2,6 +2,67 @@ import * as vscode from "vscode";
 import { exec } from "child_process";
 import * as path from "path";
 import * as fs from "fs";
+import * as os from "os";
+import {
+  type SessionState,
+  type LifecycleStatus,
+  type HookPayload,
+  type LifecycleAdapter,
+  readConfigJson,
+  writeConfigJson,
+  startLifecycleServer,
+  pollExitStatuses,
+  countByStatus,
+  statusBarText,
+  statusBarTooltip,
+  STATUS_LABEL,
+  STATUS_GLYPH,
+  shouldNotify,
+  notificationMessage,
+  HOOK_ENV,
+} from "./lifecycle";
+import {
+  LIFECYCLE_ADAPTERS,
+  CLAUDE_ADAPTER,
+  DROID_ADAPTER,
+  getAdapter,
+  isLifecycleAgent,
+  resolveOpenCodeConfigDir,
+} from "./lifecycle-adapters";
+
+/**
+ * The marker substring the old (workspace-local) OpenCode install left in
+ * `opencode.json`'s `plugin[]`. Kept here (not in the adapter) because the
+ * current OpenCode adapter is plugin-file based and no longer touches JSON;
+ * this is migration-only.
+ */
+const OLD_OPENCODE_PLUGIN_MARKER = "agent-quickpick-lifecycle";
+
+/** True if opencode.json's plugin[] still has our old file:// entry. */
+function hasOldOpencodePlugin(parsed: unknown): boolean {
+  const plugin = (parsed as { plugin?: unknown })?.plugin;
+  return (
+    Array.isArray(plugin) &&
+    plugin.some((p) => typeof p === "string" && p.includes(OLD_OPENCODE_PLUGIN_MARKER))
+  );
+}
+
+/** Remove our old file:// entry from opencode.json's plugin[]; prune if empty. */
+function stripOldOpencodePlugin(parsed: unknown): unknown {
+  const config = { ...(parsed as Record<string, unknown>) };
+  if (!Array.isArray(config.plugin)) {
+    return config;
+  }
+  const filtered = (config.plugin as unknown[]).filter(
+    (p) => !(typeof p === "string" && p.includes(OLD_OPENCODE_PLUGIN_MARKER))
+  );
+  if (filtered.length === 0) {
+    delete config.plugin;
+  } else {
+    config.plugin = filtered;
+  }
+  return config;
+}
 
 /**
  * An agent entry as it appears in settings.json (`agentQuickpick.agents[]`)
@@ -458,16 +519,61 @@ export function isSessionTerminal(terminalName: string, agentNames: Set<string>)
   return agentNames.has(baseTerminalName(terminalName).toLowerCase());
 }
 
+/**
+ * Given a set of live terminal names, return those that look like agent
+ * sessions we launched — as `{ name, agentName }` pairs (base name = agent
+ * name). Pure + host-free so it's unit-testable; used by
+ * {@link LifecycleContext.seedFromOpenTerminals} to re-adopt agent sessions
+ * into the in-memory Map after a window reload, so hooks/notifications keep
+ * working without a manual relaunch.
+ */
+export function matchSessionTerminals(
+  names: readonly string[],
+  agentNames: Set<string>
+): { name: string; agentName: string }[] {
+  const matched: { name: string; agentName: string }[] = [];
+  for (const name of names) {
+    const agentName = baseTerminalName(name);
+    if (agentNames.has(agentName.toLowerCase())) {
+      matched.push({ name, agentName });
+    }
+  }
+  return matched;
+}
+
 /** Create + show a terminal for the given resolved agent. */
-function launchAgent(agent: ResolvedAgent, state?: vscode.Memento, delayMs = 0): void {
+async function launchAgent(
+  agent: ResolvedAgent,
+  state?: vscode.Memento,
+  delayMs = 0,
+  lifecycle?: LifecycleContext
+): Promise<vscode.Terminal> {
   const openNames = vscode.window.terminals.map((t) => t.name);
+  const tabName = uniqueTerminalName(agent.name, openNames);
+
+  // Inject lifecycle env for supported agents so their hooks can call back to
+  // our server. Non-lifecycle agents get no env injection (byte-identical to
+  // pre-lifecycle behavior). The server URL resolves only once the socket is
+  // listening, so await it — it's bound within milliseconds of activate().
+  const adapter = isLifecycleAgent(agent.name) ? getAdapter(agent.name) : undefined;
+  const hookUrl = adapter && lifecycle ? await lifecycle.hookUrl() : undefined;
+  const env =
+    adapter && hookUrl ? HOOK_ENV(hookUrl, tabName) : undefined;
+
   const terminal = vscode.window.createTerminal({
-    name: uniqueTerminalName(agent.name, openNames),
+    name: tabName,
     iconPath: agent.iconPath,
     color: agent.color,
     location: vscode.TerminalLocation.Editor,
+    ...(env ? { env } : {}),
   });
   terminal.show();
+
+  // Register the session so the status bar / notifications know about it.
+  if (adapter && lifecycle) {
+    lifecycle.trackSession(tabName, agent.name);
+  }
+
   const text = launchText(agent);
   const delay = launchDelay(agent.isPlainTerminal, delayMs);
   if (text !== "") {
@@ -494,6 +600,16 @@ function launchAgent(agent: ResolvedAgent, state?: vscode.Memento, delayMs = 0):
       // globalState write failures are non-fatal — don't block the launch.
     }
   }
+
+  // Prompt once to install the lifecycle hook globally (into the agent's
+  // user-level config, keyed by marker — never per-workspace).
+  if (adapter && lifecycle) {
+    lifecycle.maybePromptInstall(adapter).catch(() => {
+      // Prompt failures are non-fatal.
+    });
+  }
+
+  return terminal;
 }
 
 /**
@@ -522,12 +638,27 @@ async function runSessions(context: vscode.ExtensionContext): Promise<void> {
     return opts?.iconPath ?? new vscode.ThemeIcon("terminal");
   };
 
-  const items: Item[] = sessions.map((t) => ({
-    label: t.name,
-    description: "running",
-    iconPath: iconOf(t),
-    terminal: t,
-  }));
+  // Sort attention-needing sessions to the top: blocked → failed → done → working.
+  const order: Record<LifecycleStatus, number> = {
+    waiting: 0,
+    failed: 1,
+    finished: 2,
+    running: 3,
+  };
+  const statusOf = (t: vscode.Terminal): LifecycleStatus =>
+    lifecycleCtx?.getSessionState(t.name)?.status ?? "running";
+
+  const items: Item[] = [...sessions]
+    .sort((a, b) => order[statusOf(a)] - order[statusOf(b)])
+    .map((t) => {
+      const status = statusOf(t);
+      return {
+        label: t.name,
+        description: `${STATUS_GLYPH[status]} ${STATUS_LABEL[status]}`,
+        iconPath: iconOf(t),
+        terminal: t,
+      };
+    });
   items.push({ label: "", kind: vscode.QuickPickItemKind.Separator });
   items.push({ label: "$(add) Launch new agent…", launch: true });
 
@@ -586,7 +717,7 @@ async function runLauncher(context: vscode.ExtensionContext): Promise<void> {
         matchOnDescription: true,
       });
       if (choice?.agent) {
-        launchAgent(choice.agent, context.globalState, launchDelayMs);
+        launchAgent(choice.agent, context.globalState, launchDelayMs, lifecycleCtx);
       }
       return;
     }
@@ -635,13 +766,413 @@ async function runLauncher(context: vscode.ExtensionContext): Promise<void> {
       const sel = qp.selectedItems[0];
       if (sel?.agent) {
         qp.hide();
-        launchAgent(sel.agent, context.globalState, launchDelayMs);
+        launchAgent(sel.agent, context.globalState, launchDelayMs, lifecycleCtx);
       }
     });
 
     render();
     qp.show();
 }
+
+/**
+ * Lifecycle awareness context — owns the HTTP server, session-state map, status
+ * bar updates, notification toasts, and the prompt-once-globally hook install
+ * flow. Created in activate(); passed to launchAgent via a module-level ref so
+ * existing call sites don't all need an extra parameter.
+ */
+class LifecycleContext {
+  /**
+   * Resolves to the bound server URL once the socket is listening. The port
+   * isn't known synchronously after `listen()`, so callers that need to inject
+   * the URL into a terminal must `await` {@link hookUrl}.
+   */
+  private readonly serverUrlPromise: Promise<string>;
+  private readonly sessions = new Map<string, SessionState>();
+  private readonly statusItem: vscode.StatusBarItem;
+  private readonly context: vscode.ExtensionContext;
+  private readonly server: { url: Promise<string>; dispose: () => void };
+  private readonly pollTimer: NodeJS.Timeout;
+  private readonly closeDisposable: vscode.Disposable;
+
+  constructor(context: vscode.ExtensionContext, statusItem: vscode.StatusBarItem) {
+    this.context = context;
+    this.statusItem = statusItem;
+
+    this.server = startLifecycleServer((payload) => this.onHookEvent(payload));
+    this.serverUrlPromise = this.server.url;
+
+    // Universal fallback: poll exit statuses every 3s for agents whose process
+    // has exited (detects finished/failed even without hooks). The agent set is
+    // recomputed each tick so a runtime config change (adding a new agent entry)
+    // is picked up without a window reload — matching the live-config behavior
+    // the onDidChangeConfiguration handler elsewhere promises.
+    this.pollTimer = setInterval(() => {
+      const agentNames = new Set(
+        loadAgents(
+          vscode.workspace.getConfiguration("agentQuickpick").get("agents")
+        ).map((a) => a.name.toLowerCase())
+      );
+      const exited = pollExitStatuses(
+        vscode.window.terminals,
+        this.sessions,
+        agentNames
+      );
+      let changed = false;
+      const now = Date.now();
+      for (const [name, exit] of exited) {
+        const prev = this.sessions.get(name);
+        // Monotonic-failed: never demote a terminal failure (e.g. a late Stop
+        // hook arriving after a non-zero exit must not flip failed → finished).
+        if (prev && prev.status === "failed" && exit.status === "finished") {
+          continue;
+        }
+        this.sessions.set(name, {
+          name,
+          agentName: prev?.agentName ?? name.replace(/ \(\d+\)$/, ""),
+          status: exit.status,
+          changedAt: now,
+          exitCode: exit.exitCode,
+        });
+        changed = true;
+        this.maybeNotify(name, exit.status, exit.exitCode);
+      }
+      if (changed) {
+        this.refreshStatusBar();
+      }
+    }, 3000);
+
+    // Clean up the session map when a terminal closes, so the status-bar count
+    // doesn't drift upward over a long session. Without this, entries were
+    // never removed (no eviction existed).
+    this.closeDisposable = vscode.window.onDidCloseTerminal((t) => {
+      if (this.sessions.delete(t.name)) {
+        this.refreshStatusBar();
+      }
+    });
+  }
+
+  /**
+   * Re-adopt agent terminals that survived a window reload into the in-memory
+   * sessions Map. Without this, {@link onHookEvent} would drop every incoming
+   * hook after a reload (the Map starts empty), silently disabling all
+   * notifications — including "needs input" — until the user manually
+   * relaunches each agent. Re-adopted sessions default to "running"; the next
+   * hook (or the exit poller) corrects them.
+   */
+  seedFromOpenTerminals(agentNames: Set<string>): void {
+    const matches = matchSessionTerminals(
+      vscode.window.terminals.map((t) => t.name),
+      agentNames
+    );
+    const now = Date.now();
+    let changed = false;
+    for (const { name, agentName } of matches) {
+      if (!this.sessions.has(name)) {
+        this.sessions.set(name, { name, agentName, status: "running", changedAt: now });
+        changed = true;
+      }
+    }
+    if (changed) {
+      this.refreshStatusBar();
+    }
+  }
+
+  /** Register a newly-launched agent terminal as a running session. */
+  trackSession(tabName: string, agentName: string): void {
+    this.sessions.set(tabName, {
+      name: tabName,
+      agentName,
+      status: "running",
+      changedAt: Date.now(),
+    });
+    this.refreshStatusBar();
+  }
+
+  /** Handle a hook payload POSTed by an agent's lifecycle hook. */
+  private onHookEvent(payload: HookPayload): void {
+    if (!payload.session || !payload.status) {
+      return;
+    }
+    const status = payload.status as LifecycleStatus;
+    const prev = this.sessions.get(payload.session);
+    if (!prev) {
+      return; // unknown session — ignore (e.g. from a different window)
+    }
+    // Monotonic-failed: a terminal failure (non-zero exit) must not be
+    // overwritten by a late hook claiming success.
+    if (prev.status === "failed" && status === "finished") {
+      return;
+    }
+    this.sessions.set(payload.session, {
+      ...prev,
+      status,
+      changedAt: Date.now(),
+    });
+    this.refreshStatusBar();
+    this.maybeNotify(payload.session, status);
+  }
+
+  /** Fire a notification toast if appropriate for this status change. */
+  private maybeNotify(session: string, status: LifecycleStatus, exitCode?: number): void {
+    const settingOn = vscode.workspace
+      .getConfiguration("agentQuickpick")
+      .get<boolean>("lifecycleNotifications", true);
+    const activeTerminal = vscode.window.activeTerminal;
+    const isActive =
+      !!activeTerminal && activeTerminal.name === session;
+    if (!shouldNotify(status, isActive, settingOn)) {
+      return;
+    }
+    const sessionState = this.sessions.get(session);
+    const agentName = sessionState?.agentName ?? session;
+    const repo = vscode.workspace.workspaceFolders?.[0]?.name;
+    const msg = notificationMessage(agentName, status, repo, exitCode);
+    if (!msg) {
+      return;
+    }
+    const show = status === "failed"
+      ? (t: string, ...a: string[]) => vscode.window.showErrorMessage(t, ...a)
+      : (t: string, ...a: string[]) => vscode.window.showInformationMessage(t, ...a);
+    show(msg.text, msg.action).then((choice) => {
+      if (choice === msg.action) {
+        const terminal = vscode.window.terminals.find((t) => t.name === session);
+        terminal?.show();
+      }
+    });
+  }
+
+  /** Look up a tracked session's state by terminal/tab name. */
+  getSessionState(tabName: string): SessionState | undefined {
+    return this.sessions.get(tabName);
+  }
+
+  /** Recompute status-bar text + tooltip from the current sessions map. */
+  refreshStatusBar(): void {
+    const states = [...this.sessions.values()];
+    const counts = countByStatus(states);
+    this.statusItem.text = statusBarText(counts);
+    this.statusItem.tooltip = statusBarTooltip(states);
+  }
+
+  /**
+   * The absolute filesystem path we install/remove for an adapter — the JSON
+   * config for command-hook agents, the plugin file for plugin-file agents.
+   * Command-hook paths are home-relative; the OpenCode plugin path is relative
+   * to OpenCode's config dir, which is resolved per-platform (NOT a hardcoded
+   * `~/.config/opencode` — that's wrong on Windows and ignores
+   * `OPENCODE_CONFIG_DIR`).
+   */
+  private adapterFsPath(adapter: LifecycleAdapter): string {
+    if (adapter.kind === "command-hooks") {
+      return path.join(os.homedir(), adapter.configPath);
+    }
+    const configDir = resolveOpenCodeConfigDir(process.env, process.platform, os.homedir());
+    return path.join(configDir, adapter.pluginPath);
+  }
+
+  /**
+   * A display path for the user. Command-hook adapters show `~/...`; the
+   * OpenCode plugin shows the resolved config dir (which may not be under home
+   * on Windows or when `OPENCODE_CONFIG_DIR` is set).
+   */
+  private adapterDisplayPath(adapter: LifecycleAdapter): string {
+    if (adapter.kind === "command-hooks") {
+      return `~/${adapter.configPath}`;
+    }
+    const configDir = resolveOpenCodeConfigDir(process.env, process.platform, os.homedir());
+    return path.join(configDir, adapter.pluginPath);
+  }
+
+  /**
+   * Prompt once (ever) to install the lifecycle hook for an adapter, globally.
+   * Idempotent: remembered in globalState as "installed" or "declined", keyed by
+   * marker alone (no workspace) — so a fresh repo never re-prompts.
+   */
+  async maybePromptInstall(adapter: LifecycleAdapter): Promise<void> {
+    const flagKey = `hooks.${adapter.marker}.global`;
+    const flag = this.context.globalState.get<string>(flagKey);
+    if (flag === "installed" || flag === "declined") {
+      return;
+    }
+
+    const choice = await vscode.window.showInformationMessage(
+      `Get notified when ${adapter.agentName} finishes or needs input? Installs a lightweight ` +
+        `hook, removable anytime.`,
+      "Install",
+      "Not now"
+    );
+
+    if (choice === "Install") {
+      try {
+        await this.installHook(adapter);
+        this.context.globalState.update(flagKey, "installed");
+        vscode.window.showInformationMessage(
+          `Lifecycle hook installed in ${this.adapterDisplayPath(adapter)}.`
+        );
+      } catch (err) {
+        vscode.window.showErrorMessage(
+          `Failed to install lifecycle hook: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    } else {
+      this.context.globalState.update(flagKey, "declined");
+    }
+  }
+
+  /**
+   * Resolve the bound server URL. The port isn't known until the socket is
+   * listening, so this awaits the listening event rather than reading
+   * `server.address()` synchronously (which yields port 0).
+   */
+  hookUrl(): Promise<string> {
+    return this.serverUrlPromise;
+  }
+
+  /** Write the hook into the adapter's global config / plugin file. */
+  private async installHook(adapter: LifecycleAdapter): Promise<void> {
+    const fsPath = this.adapterFsPath(adapter);
+    const hookUrl = await this.hookUrl();
+
+    if (adapter.kind === "plugin-file") {
+      await fs.promises.mkdir(path.dirname(fsPath), { recursive: true });
+      const source = adapter.buildSource(hookUrl, "");
+      await fs.promises.writeFile(fsPath, source, "utf8");
+      return;
+    }
+
+    // command-hooks: merge into the JSON config, preserving user content.
+    let existing: unknown = {};
+    try {
+      const text = await fs.promises.readFile(fsPath, "utf8");
+      existing = readConfigJson(text);
+    } catch {
+      // File doesn't exist yet — start from {}.
+    }
+    if (adapter.hasOurHooks(existing)) {
+      return; // already installed (idempotent)
+    }
+    const merged = adapter.mergeHooks(existing, hookUrl, "");
+    await fs.promises.mkdir(path.dirname(fsPath), { recursive: true });
+    await fs.promises.writeFile(fsPath, writeConfigJson(merged), "utf8");
+  }
+
+  /**
+   * Remove our hook from every adapter's global config / plugin file.
+   * Used by the `agentQuickpick.removeHooks` command. Also resets every
+   * adapter's install-prompt flag so the next launch re-prompts.
+   */
+  async removeAllHooks(): Promise<string[]> {
+    const touched: string[] = [];
+
+    for (const adapter of Object.values(LIFECYCLE_ADAPTERS)) {
+      const fsPath = this.adapterFsPath(adapter);
+
+      // Reset the install flag unconditionally — even when there is nothing to
+      // strip (user previously declined, or the files were deleted by hand) —
+      // otherwise a "declined" choice could never be undone via this command.
+      this.context.globalState.update(`hooks.${adapter.marker}.global`, undefined);
+
+      if (adapter.kind === "plugin-file") {
+        try {
+          await fs.promises.unlink(fsPath);
+          touched.push(this.adapterDisplayPath(adapter));
+        } catch {
+          // not present — nothing to remove
+        }
+      } else {
+        let text: string;
+        try {
+          text = await fs.promises.readFile(fsPath, "utf8");
+        } catch {
+          continue; // file doesn't exist — skip
+        }
+        const parsed = readConfigJson(text);
+        if (!adapter.hasOurHooks(parsed)) {
+          continue;
+        }
+        const stripped = adapter.stripHooks(parsed);
+        await fs.promises.writeFile(fsPath, writeConfigJson(stripped), "utf8");
+        touched.push(this.adapterDisplayPath(adapter));
+      }
+    }
+    return touched;
+  }
+
+  /**
+   * One-time-per-workspace cleanup of the older *workspace-local* hooks a
+   * pre-global build wrote (`.claude/settings.local.json`, `.factory/settings.json`,
+   * `opencode.json` + `.opencode/agent-quickpick-lifecycle.mjs`). Strips only
+   * our own entries (by marker) and prunes the OpenCode plugin file. Silent — no
+   * prompt, no error surface — since it's housekeeping, not a user action.
+   */
+  async migrateWorkspaceHooks(): Promise<void> {
+    const wsFolder = vscode.workspace.workspaceFolders?.[0];
+    if (!wsFolder) {
+      return;
+    }
+    const wsKey = wsFolder.uri.fsPath.replace(/[^a-zA-Z0-9]/g, "_");
+    const flagKey = `migration.workspaceHooks.${wsKey}`;
+    if (this.context.globalState.get<boolean>(flagKey)) {
+      return;
+    }
+
+    const baseDir = wsFolder.uri.fsPath;
+    const stripJson = async (
+      rel: string,
+      strip: (parsed: unknown) => unknown,
+      has: (parsed: unknown) => boolean
+    ) => {
+      const p = path.join(baseDir, rel);
+      try {
+        const parsed = readConfigJson(await fs.promises.readFile(p, "utf8"));
+        if (has(parsed)) {
+          await fs.promises.writeFile(p, writeConfigJson(strip(parsed)), "utf8");
+        }
+      } catch {
+        // missing/unreadable — nothing to migrate
+      }
+    };
+
+    // Claude & Droid: same marker/schema as the global adapters, just at the old
+    // workspace paths.
+    await stripJson(
+      ".claude/settings.local.json",
+      (c) => CLAUDE_ADAPTER.stripHooks(c),
+      (c) => CLAUDE_ADAPTER.hasOurHooks(c)
+    );
+    await stripJson(
+      ".factory/settings.json",
+      (c) => DROID_ADAPTER.stripHooks(c),
+      (c) => DROID_ADAPTER.hasOurHooks(c)
+    );
+
+    // OpenCode (old): a file:// entry in opencode.json's plugin[] + a plugin
+    // .mjs on disk.
+    const OLD_OPENCODE_PLUGIN = ".opencode/agent-quickpick-lifecycle.mjs";
+    await stripJson(
+      "opencode.json",
+      (c) => stripOldOpencodePlugin(c),
+      (c) => hasOldOpencodePlugin(c)
+    );
+    try {
+      await fs.promises.unlink(path.join(baseDir, OLD_OPENCODE_PLUGIN));
+    } catch {
+      // already gone — fine
+    }
+
+    this.context.globalState.update(flagKey, true);
+  }
+
+  dispose(): void {
+    clearInterval(this.pollTimer);
+    this.closeDisposable.dispose();
+    this.server.dispose();
+  }
+}
+
+// Module-level lifecycle context, set in activate(). Null when the lifecycle
+// feature is not active (e.g. in unit tests that don't call activate).
+let lifecycleCtx: LifecycleContext | undefined;
 
 export function activate(context: vscode.ExtensionContext) {
   // Clear the install-detection cache whenever any agentQuickpick.* setting
@@ -682,9 +1213,47 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
+  // Lifecycle awareness — HTTP server for agent hooks, session tracking, live
+  // status-bar counts, and notification toasts. Owns its own poll timer.
+  lifecycleCtx = new LifecycleContext(context, statusItem);
+  context.subscriptions.push({ dispose: () => lifecycleCtx?.dispose() });
+
+  // Re-adopt any agent terminals that survived a window reload, so lifecycle
+  // hooks/notifications keep working without a manual relaunch. Without this,
+  // the in-memory sessions Map starts empty on every reload and onHookEvent
+  // would drop every incoming POST — silently disabling all notifications.
+  lifecycleCtx.seedFromOpenTerminals(
+    new Set(
+      loadAgents(
+        vscode.workspace.getConfiguration("agentQuickpick").get("agents")
+      ).map((a) => a.name.toLowerCase())
+    )
+  );
+
+  // One-time cleanup of any older workspace-local hooks a pre-global build left
+  // in this repo. Silent housekeeping — never blocks activation.
+  lifecycleCtx.migrateWorkspaceHooks().catch(() => {
+    // migration failures are non-fatal
+  });
+
   context.subscriptions.push(
     vscode.commands.registerCommand("agentQuickpick.open", () => runLauncher(context)),
-    vscode.commands.registerCommand("agentQuickpick.sessions", () => runSessions(context))
+    vscode.commands.registerCommand("agentQuickpick.sessions", () => runSessions(context)),
+    vscode.commands.registerCommand("agentQuickpick.removeHooks", async () => {
+      if (!lifecycleCtx) {
+        return;
+      }
+      const touched = await lifecycleCtx.removeAllHooks();
+      if (touched.length === 0) {
+        vscode.window.showInformationMessage(
+          "No lifecycle hooks found to remove in this workspace."
+        );
+      } else {
+        vscode.window.showInformationMessage(
+          `Removed lifecycle hooks from: ${touched.join(", ")}`
+        );
+      }
+    })
   );
 }
 

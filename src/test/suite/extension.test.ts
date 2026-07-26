@@ -16,6 +16,7 @@ import {
   uniqueTerminalName,
   baseTerminalName,
   isSessionTerminal,
+  matchSessionTerminals,
   _resetInstallCacheForTests,
   _poisonInstallCacheForTests,
 } from "../../extension";
@@ -589,5 +590,44 @@ suite("isSessionTerminal", () => {
   test("rejects unrelated terminal names", () => {
     assert.strictEqual(isSessionTerminal("zsh", names), false);
     assert.strictEqual(isSessionTerminal("node", names), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// matchSessionTerminals — re-adopts agent terminals into the sessions Map
+// after a window reload (Fix 1: reload-proof notifications).
+// ---------------------------------------------------------------------------
+
+suite("matchSessionTerminals (reload re-adoption)", () => {
+  const names = new Set(["claude", "codex", "oh-my-pi"]);
+
+  test("returns name + base-agentName pairs for matched terminals", () => {
+    const matched = matchSessionTerminals(["Claude", "Codex (2)", "zsh"], names);
+    assert.deepStrictEqual(matched, [
+      { name: "Claude", agentName: "Claude" },
+      { name: "Codex (2)", agentName: "Codex" },
+    ]);
+  });
+
+  test("strips the (N) counter into the base agent name", () => {
+    const matched = matchSessionTerminals(["oh-my-pi (5)"], names);
+    assert.deepStrictEqual(matched, [{ name: "oh-my-pi (5)", agentName: "oh-my-pi" }]);
+  });
+
+  test("is case-insensitive on the agent match", () => {
+    const matched = matchSessionTerminals(["CLAUDE", "codex"], names);
+    assert.deepStrictEqual(matched, [
+      { name: "CLAUDE", agentName: "CLAUDE" },
+      { name: "codex", agentName: "codex" },
+    ]);
+  });
+
+  test("skips non-agent terminals", () => {
+    const matched = matchSessionTerminals(["zsh", "node", "PowerShell"], names);
+    assert.deepStrictEqual(matched, []);
+  });
+
+  test("empty input → empty result", () => {
+    assert.deepStrictEqual(matchSessionTerminals([], names), []);
   });
 });

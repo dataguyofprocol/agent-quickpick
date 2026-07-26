@@ -6,7 +6,7 @@
 npm install
 npm run compile     # tsc
 npm run watch       # tsc -w
-npm test            # runs the unit suite in a headless VS Code (35 tests)
+npm test            # runs the unit suite in a headless VS Code (147 tests)
 npm run package     # builds the .vsix
 ```
 
@@ -14,8 +14,11 @@ CI runs on every push across Ubuntu, macOS, and Windows — build, test, package
 
 ## Source layout
 
-- `src/extension.ts` — the extension: `BUILTIN_AGENTS`, `loadAgents`, `resolveIconPath`, `resolveColor`, `isCmdInstalled`, `isSafeBinaryName`, `frecencyScore`, `sortByFrecency`, `launchText`.
+- `src/extension.ts` — the extension: `BUILTIN_AGENTS`, `loadAgents`, `resolveIconPath`, `resolveColor`, `isCmdInstalled`, `isSafeBinaryName`, `frecencyScore`, `sortByFrecency`, `launchText`, plus the `LifecycleContext` class (session tracking, status-bar updates, notifications, hook install/remove).
+- `src/lifecycle.ts` — lifecycle awareness shared core: types, the `LifecycleAdapter` interface, pure functions (JSON config helpers, command-hook merge/strip, status-bar rendering, notification logic), and the VS Code-coupled HTTP server + exit-status poller.
+- `src/lifecycle-adapters.ts` — one adapter per lifecycle-aware agent: Claude Code, Droid (shared command-hook schema), and OpenCode (file-based ESM plugin). Registry + lookup helpers.
 - `src/test/suite/extension.test.ts` — unit tests for the merge/icon/color/detection/frecency logic.
+- `src/test/suite/lifecycle.test.ts` — unit tests for adapter symmetry, hook generation, status-bar rendering, and notification logic.
 - `icons/*.svg` — one brand icon per agent. House style: 24×24 viewBox, `rx=6` rounded background, white glyph on brand fill.
 - `package.json` — `contributes.configuration` (settings schema), `contributes.colors` (8 custom theme colors), command + keybinding.
 - `.github/assets/` — README screenshots (real PNG captures).
@@ -41,3 +44,4 @@ To refresh the PNGs in `.github/assets/`:
 - **Frecency** scores each agent by `count × 2^(-ageDays/10)`; the quick-pick list is stable-sorted by that score so the most-used agents float to the top while never-launched agents keep curated order. Scores live in `globalState` (`frecency.v1`) so they persist across restarts and sync across machines via Settings Sync.
 - **Icon resolution** falls back gracefully: codicon → existing file → `terminal` codicon. A broken icon path never breaks the quick pick.
 - **Colors** are a closed set (8 built-ins + 16 ANSI) because VS Code registers theme colors at publish time only.
+- **Lifecycle awareness** tracks per-session status (running / finished / waiting / failed) for Claude Code, OpenCode, and Droid. Each agent is abstracted behind a `LifecycleAdapter` — Claude and Droid share a command-hook schema (`hooks.<Event>` in settings JSON); OpenCode uses a file-based ESM plugin referenced from `opencode.json`'s `plugin[]` array. On `activate`, a localhost HTTP server (random port) receives POSTs from agent hooks; each lifecycle-aware terminal is injected with `AQP_HOOK_URL` + `AQP_SESSION` env vars via `createTerminal({ env })`. Install and removal are symmetric and idempotent — both are one-file-read → marker-based-transform → one-write. Hooks are identified by a unique marker (`agentQuickpick:<agent>`), so stripping ours never clobbers the user's own hooks. A 3-second exit-status poll is a universal fallback for agents whose hooks haven't fired. VS Code's stable API cannot badge a terminal tab after creation, so per-session status surfaces via notifications + the status bar instead.

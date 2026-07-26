@@ -84,6 +84,13 @@ Most developers never need to touch settings. But if you have custom scripts, pa
   "agentQuickpick.launchDelayMs": 500
   ```
 
+### Lifecycle notifications
+
+The first time you launch Claude Code, OpenCode, or Droid, Agent Quickpick offers to install a one-time hook so it can notify you when that agent finishes or needs input — in every repo, not just this one. The hook is scoped to sessions launched from Agent Quickpick and does nothing in terminals you open elsewhere.
+
+- **Where it lives**: your user-level agent config (e.g. `~/.claude/settings.json`), merged in alongside anything already there.
+- **Remove it**: run **Remove Lifecycle Hooks** from the Command Palette, or turn off `agentQuickpick.lifecycleNotifications` in settings.
+
 ---
 
 ## License & Notes

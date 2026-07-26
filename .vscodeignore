@@ -11,3 +11,5 @@ tsconfig.json
 out/test/**
 **/*.map
 *.vsix
+.env
+.zcode/**
