@@ -638,6 +638,24 @@ async function launchAgent(
   return terminal;
 }
 
+type LauncherItem = vscode.QuickPickItem & { agent?: ResolvedAgent };
+
+/**
+ * The currently-open launcher quick pick, if any. A second ⌘⇧A press while
+ * it's open swaps it for the sessions picker (see the agentQuickpick.open
+ * handler). Undefined whenever the launcher isn't showing.
+ */
+let launcherPick: vscode.QuickPick<LauncherItem> | undefined;
+
+/**
+ * Double-tap window for ⌘⇧A / Ctrl+Shift+A: a second press within this
+ * interval opens the sessions picker instead of the agent launcher. Matches
+ * OS double-click timing. Hardcoded per design (no user setting).
+ */
+const OPEN_DOUBLE_TAP_MS = 250;
+let openTapTimer: NodeJS.Timeout | undefined;
+let lastOpenTapAt = 0;
+
 /**
  * Show a quick pick of currently-running agent terminals (matched by name) and
  * focus the chosen one. When nothing is running, falls through to the launcher.
@@ -722,8 +740,40 @@ async function runLauncher(context: vscode.ExtensionContext): Promise<void> {
     const detect = config.get<boolean>("detectInstalled", true);
     const launchDelayMs = config.get<number>("launchDelayMs", 300);
 
+    // Show the pick immediately (busy while install detection resolves) so the
+    // handle exists synchronously — a second ⌘⇧A press can swap it for the
+    // sessions picker even mid-resolution.
+    const qp = vscode.window.createQuickPick<LauncherItem>();
+    qp.placeholder = "Open agent terminal";
+    qp.matchOnDescription = true;
+    qp.busy = true;
+    qp.items = [];
+    launcherPick = qp;
+
+    qp.onDidAccept(() => {
+      const sel = qp.selectedItems[0];
+      if (sel?.agent) {
+        qp.hide();
+        launchAgent(sel.agent, context.globalState, launchDelayMs, lifecycleCtx);
+      }
+    });
+    qp.onDidHide(() => {
+      if (launcherPick === qp) {
+        launcherPick = undefined;
+      }
+      qp.dispose();
+    });
+
+    qp.show();
+
     const configs = loadAgents(userAgents);
     const agents = await resolveAgents(configs, context.extensionUri, detect);
+
+    // Superseded while resolving (second ⌘⇧A press hid this pick) — don't
+    // populate or re-show it.
+    if (launcherPick !== qp) {
+      return;
+    }
 
     // Sort by frecency (launch count + recency) so the most-used agents float
     // to the top. Stable sort → never-launched agents keep curated order.
@@ -734,9 +784,7 @@ async function runLauncher(context: vscode.ExtensionContext): Promise<void> {
       return e ? frecencyScore(e.c, e.t, now) : 0;
     });
 
-    type Item = vscode.QuickPickItem & { agent?: ResolvedAgent };
-
-    const toItem = (agent: ResolvedAgent): Item => ({
+    const toItem = (agent: ResolvedAgent): LauncherItem => ({
       label: agent.name,
       // Show the actual command that will be sent (incl. launcher prefix).
       description: agent.isPlainTerminal ? "shell" : launchText(agent) || agent.cmd,
@@ -748,27 +796,11 @@ async function runLauncher(context: vscode.ExtensionContext): Promise<void> {
     const installedItems = sortedAgents.filter((a) => a.installed).map(toItem);
     const uninstalledItems = sortedAgents.filter((a) => !a.installed).map(toItem);
 
-    // When detection is off (or nothing is uninstalled), we just show the flat list.
+    // When detection is off (or nothing is uninstalled), show the flat list
+    // with no eye toggle.
     const showToggle = detect && uninstalledItems.length > 0;
 
-    if (!showToggle) {
-      // Simpler path: no toggle needed, use the basic API.
-      const choice = await vscode.window.showQuickPick(installedItems, {
-        placeHolder: "Open agent terminal",
-        matchOnDescription: true,
-      });
-      if (choice?.agent) {
-        launchAgent(choice.agent, context.globalState, launchDelayMs, lifecycleCtx);
-      }
-      return;
-    }
-
-    // Toggle path: a createQuickPick with an eye button to reveal uninstalled agents.
-    const qp = vscode.window.createQuickPick<Item>();
-    qp.placeholder = "Open agent terminal";
-    qp.matchOnDescription = true;
-
-    const separator: Item = {
+    const separator: LauncherItem = {
       label: "Not installed",
       kind: vscode.QuickPickItemKind.Separator,
     };
@@ -789,7 +821,7 @@ async function runLauncher(context: vscode.ExtensionContext): Promise<void> {
         qp.buttons = [hideBtn];
       } else {
         qp.items = installedItems;
-        qp.buttons = [showAllBtn];
+        qp.buttons = showToggle ? [showAllBtn] : [];
       }
     };
 
@@ -803,16 +835,8 @@ async function runLauncher(context: vscode.ExtensionContext): Promise<void> {
       }
     });
 
-    qp.onDidAccept(() => {
-      const sel = qp.selectedItems[0];
-      if (sel?.agent) {
-        qp.hide();
-        launchAgent(sel.agent, context.globalState, launchDelayMs, lifecycleCtx);
-      }
-    });
-
+    qp.busy = false;
     render();
-    qp.show();
 }
 
 /**
@@ -1493,7 +1517,39 @@ export function activate(context: vscode.ExtensionContext) {
   });
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("agentQuickpick.open", () => runLauncher(context)),
+    // Clear any pending single-tap timer on deactivate so a deferred
+    // launcher launch can't fire after the extension unloads.
+    { dispose: () => { if (openTapTimer) { clearTimeout(openTapTimer); } } }
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("agentQuickpick.open", () => {
+      // If the launcher is already open, a fresh press swaps it for the
+      // sessions picker immediately (preserves the pre-double-tap swap UX;
+      // orthogonal to the timer because the launcher only opens after the
+      // 250ms window has elapsed).
+      if (launcherPick) {
+        const qp = launcherPick;
+        launcherPick = undefined;
+        qp.hide();
+        return runSessions(context);
+      }
+      // Double-tap detection: a second press within OPEN_DOUBLE_TAP_MS
+      // cancels the pending launcher launch and opens the sessions picker.
+      const now = Date.now();
+      if (openTapTimer && now - lastOpenTapAt < OPEN_DOUBLE_TAP_MS) {
+        clearTimeout(openTapTimer);
+        openTapTimer = undefined;
+        return runSessions(context);
+      }
+      // Single tap: defer the launcher by the tap window so a quick second
+      // press can promote this tap into a sessions-picker open.
+      lastOpenTapAt = now;
+      openTapTimer = setTimeout(() => {
+        openTapTimer = undefined;
+        void runLauncher(context);
+      }, OPEN_DOUBLE_TAP_MS);
+    }),
     vscode.commands.registerCommand("agentQuickpick.sessions", () => runSessions(context)),
     vscode.commands.registerCommand("agentQuickpick.removeHooks", async () => {
       if (!lifecycleCtx) {

@@ -2,7 +2,7 @@
   "name": "agent-quickpick",
   "displayName": "Agent Quickpick",
   "description": "Quick-pick launcher for agent CLI terminals — Claude, Opencode, Claude Proxy, Claude GLM, oh-my-pi, Droid, Command Code, and your own — opened in the editor area with their own icon and tab color.",
-  "version": "0.6.3",
+  "version": "0.7.0",
   "publisher": "dataguyofprocol",
   "license": "MIT",
   "icon": "icons/icon.png",
@@ -185,7 +185,7 @@
         "agentQuickpick.showStatusBar": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Show an **Agent** button in the status bar that opens the quick pick. Disable to keep the status bar uncluttered and rely on the keybindings (`Cmd/Ctrl+Shift+A` to launch, `Cmd/Ctrl+Shift+L` for running sessions)."
+          "markdownDescription": "Show an **Agent** button in the status bar that opens the quick pick. Disable to keep the status bar uncluttered and rely on the keybinding (`Cmd/Ctrl+Shift+A` to launch; press twice within 250ms for running sessions)."
         },
         "agentQuickpick.lifecycleNotifications": {
           "type": "boolean",
@@ -238,11 +238,6 @@
         "command": "agentQuickpick.open",
         "key": "ctrl+shift+a",
         "mac": "cmd+shift+a"
-      },
-      {
-        "command": "agentQuickpick.sessions",
-        "key": "ctrl+shift+l",
-        "mac": "cmd+shift+l"
       }
     ]
   },

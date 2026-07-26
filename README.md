@@ -107,12 +107,19 @@ One sound for every status — its job is to get your attention; the toast says 
 
 ### Keyboard shortcuts
 
+One binding does both jobs — no second shortcut to remember, and nothing of VS Code's own is shadowed.
+
 | Shortcut | Action |
 | --- | --- |
 | `⌘⇧A` / `Ctrl+Shift+A` | Open the agent launcher |
-| `⌘⇧L` / `Ctrl+Shift+L` | List running agent sessions — pick one to focus it |
+| `⌘⇧A` twice (within 250ms) | Open running agent sessions — pick one to focus it |
+| `⌘⇧A` again while the launcher is open | Switch to running agent sessions |
 
-`⌘⇧L` shadows VS Code's built-in **Select All Occurrences**. Rebind either one from **Preferences: Open Keyboard Shortcuts**.
+Double-tap with nothing running just re-opens the launcher, so the gesture is never a dead end. `Agent Quickpick: Running Sessions` is also on the status-bar item and in the Command Palette.
+
+### Status bar
+
+The **Agent** item shows a live count of running agents **for the active repo only** — terminals launched from another folder in the same window don't inflate it. Click it to jump to a session. Hide it with `agentQuickpick.showStatusBar: false`.
 
 ---
 
