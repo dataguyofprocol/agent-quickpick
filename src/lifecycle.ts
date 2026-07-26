@@ -19,17 +19,26 @@ import * as vscode from "vscode";
 // Types
 // ---------------------------------------------------------------------------
 
-export type LifecycleStatus = "running" | "finished" | "waiting" | "failed";
+export type LifecycleStatus =
+  | "running"
+  | "finished"
+  | "waiting"
+  | "failed"
+  | "unknown";
 
 /**
  * Human labels for each lifecycle status, using Herdr's vocabulary. Shared by
  * the status-bar tooltip and the session quickpick so the two never drift.
+ * `unknown` is the honest label for a re-adopted terminal after a host reload:
+ * we know an agent tab exists, but until a hook or exit-status poll confirms
+ * its state, we don't claim it's working.
  */
 export const STATUS_LABEL: Record<LifecycleStatus, string> = {
   running: "working",
   finished: "done",
   waiting: "blocked",
   failed: "failed",
+  unknown: "reconnecting",
 };
 
 /** Compact glyph per status, matching {@link statusBarText}. */
@@ -38,6 +47,7 @@ export const STATUS_GLYPH: Record<LifecycleStatus, string> = {
   finished: "✓",
   waiting: "⏸",
   failed: "✗",
+  unknown: "○",
 };
 
 export interface SessionState {
@@ -55,6 +65,20 @@ export interface SessionState {
    * status-bar tooltip and the failure toast.
    */
   exitCode?: number;
+  /**
+   * The workspace folder this session was launched from (fsPath), captured at
+   * `trackSession` time. Immutable per session — used as the fallback for
+   * repo-scoping when no `cwd` has arrived from a hook yet (e.g. immediately
+   * after launch, or after a host reload re-adopted the terminal).
+   */
+  launchedInFolder?: string;
+  /**
+   * The agent's actual current working directory (fsPath), as reported by the
+   * most recent hook payload that carried `cwd`. Source of truth for
+   * repo-scoping when set (it accounts for `cd` inside the agent); falls back
+   * to {@link launchedInFolder} when absent.
+   */
+  cwd?: string;
 }
 
 /**
@@ -68,6 +92,13 @@ export interface HookPayload {
   session?: string;
   status?: LifecycleStatus;
   agentName?: string;
+  /**
+   * The agent's current working directory, when the agent's hook payload
+   * includes it (Claude Code does via stdin `cwd`; OpenCode via `process.cwd()`).
+   * Used to associate the session with a workspace folder for repo-scoped
+   * status-bar filtering. Absent for adapters/sources that don't supply it.
+   */
+  cwd?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -222,7 +253,7 @@ export function buildNodeHookCommand(
   // Notification for this agent — even sessions we didn't launch. When
   // AQP_SESSION is absent (not one of ours), exit immediately: a no-op, no
   // socket, no dead-port noise.
-  return `node -e "if(!process.env.AQP_SESSION){process.exit(0)}const h=require('http'),u=process.env.AQP_HOOK_URL||'${escapedUrl}';let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d||'{}');const b=JSON.stringify({marker:'${marker}',session:process.env.AQP_SESSION||'${session}',status:'${status}',agentName:'${marker.split(':')[1]||''}'});const r=h.request(u,{method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(b)}});r.setTimeout(2000,()=>r.destroy());r.on('error',()=>{});r.end(b)}catch{}})"`;
+  return `node -e "if(!process.env.AQP_SESSION){process.exit(0)}const h=require('http'),u=process.env.AQP_HOOK_URL||'${escapedUrl}';let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d||'{}');const b=JSON.stringify({marker:'${marker}',session:process.env.AQP_SESSION||'${session}',status:'${status}',agentName:'${marker.split(':')[1]||''}',cwd:j?.cwd||''});const r=h.request(u,{method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(b)}});r.setTimeout(2000,()=>r.destroy());r.on('error',()=>{});r.end(b)}catch{}})"`;
 }
 
 /**
@@ -356,6 +387,7 @@ export function countByStatus(states: SessionState[]): Record<LifecycleStatus, n
     finished: 0,
     waiting: 0,
     failed: 0,
+    unknown: 0,
   };
   for (const s of states) {
     counts[s.status]++;
@@ -366,7 +398,9 @@ export function countByStatus(states: SessionState[]): Record<LifecycleStatus, n
 /**
  * Render the status-bar item text. All-zero → the static default (preserves
  * pre-lifecycle behavior). Otherwise a compact live count:
- * `$(agent-quickpick) 2● 1✓ 1⏸ 1✗` (only non-zero groups shown).
+ * `$(agent-quickpick) 2● 1✓ 1⏸ 1✗` (only non-zero groups shown). `unknown`
+ * sessions render as `○` (hollow) so re-adopted terminals after a host reload
+ * are visually distinct from confirmed-working ones.
  */
 export function statusBarText(counts: Record<LifecycleStatus, number>): string {
   const glyph = "$(agent-quickpick)";
@@ -375,6 +409,7 @@ export function statusBarText(counts: Record<LifecycleStatus, number>): string {
   if (counts.finished > 0) parts.push(`${counts.finished}✓`);
   if (counts.waiting > 0) parts.push(`${counts.waiting}⏸`);
   if (counts.failed > 0) parts.push(`${counts.failed}✗`);
+  if (counts.unknown > 0) parts.push(`${counts.unknown}○`);
 
   if (parts.length === 0) {
     return `${glyph} Agent`;
@@ -384,20 +419,83 @@ export function statusBarText(counts: Record<LifecycleStatus, number>): string {
 
 /**
  * Render the status-bar tooltip: a per-session list, most-recently-changed
- * first. Empty → a generic description.
+ * first. Empty → a generic description. When a session's `workspaceFolder` is
+ * known (either via a hook-reported `cwd` or its launch folder), the folder's
+ * basename is appended so the same agent across multiple repos is
+ * disambiguated in the tooltip.
  */
 export function statusBarTooltip(states: SessionState[]): string {
   if (states.length === 0) {
     return "Agent Quickpick — running agents";
   }
   const sorted = [...states].sort((a, b) => b.changedAt - a.changedAt);
-  return sorted.map((s) => `${s.name} — ${STATUS_LABEL[s.status]}`).join("\n");
+  return sorted
+    .map((s) => {
+      const folder = folderOf(s);
+      const suffix = folder ? ` · ${folderBasename(folder)}` : "";
+      return `${s.name} — ${STATUS_LABEL[s.status]}${suffix}`;
+    })
+    .join("\n");
+}
+
+/**
+ * The workspace folder to attribute a session to. Prefers the hook-reported
+ * `cwd` (source of truth, accounts for `cd` inside the agent) and falls back
+ * to the launch folder. Returns undefined for re-adopted terminals that have
+ * neither (after a host reload, before any hook has arrived).
+ */
+export function folderOf(state: SessionState): string | undefined {
+  return state.cwd ?? state.launchedInFolder;
+}
+
+/** Return the basename of a folder path, tolerating trailing slashes. */
+export function folderBasename(folder: string): string {
+  const trimmed = folder.replace(/[\\/]+$/, "");
+  const slash = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+  return slash >= 0 ? trimmed.slice(slash + 1) : trimmed;
+}
+
+/**
+ * Filter a list of session states to those that belong to the active workspace
+ * folder. Pure + host-free so it's unit-testable. A session belongs iff its
+ * {@link folderOf} matches `activeFolder`. When `activeFolder` is undefined
+ * (no workspace open), all sessions are returned (preserves the pre-filter
+ * aggregate-everything behavior).
+ *
+ * Re-adopted sessions with neither `cwd` nor `launchedInFolder` are excluded
+ * when an `activeFolder` is set — we can't honestly claim them for any repo.
+ */
+export function filterSessionsByFolder(
+  states: SessionState[],
+  activeFolder: string | undefined
+): SessionState[] {
+  if (activeFolder === undefined) {
+    return states;
+  }
+  return states.filter((s) => folderOf(s) === activeFolder);
+}
+
+/**
+ * The statuses worth announcing to the user. `running` is too noisy and
+ * `unknown` isn't a state we can honestly announce. Shared by the toast, the
+ * OS notification, and the sound so the three never drift apart.
+ */
+const ANNOUNCED_STATUSES: readonly LifecycleStatus[] = [
+  "finished",
+  "waiting",
+  "failed",
+];
+
+/** True if this status is one we announce (toast / OS notification / sound). */
+export function isAnnouncedStatus(status: LifecycleStatus): boolean {
+  return ANNOUNCED_STATUSES.includes(status);
 }
 
 /**
  * Whether a notification toast should fire for this status. Suppressed when the
  * terminal is already focused (the user is looking at it) or the setting is off.
- * Fires on `finished`, `waiting`, and `failed` — not on `running` (too noisy).
+ * Fires on `finished`, `waiting`, and `failed` — not on `running` (too noisy)
+ * and never on `unknown` (we don't have a confident state to announce).
  * `failed` is rendered as an error-severity toast by the caller (see
  * {@link LifecycleContext.maybeNotify}), so it is included here; a crashed agent
  * must not be silent.
@@ -409,8 +507,245 @@ export function shouldNotify(
 ): boolean {
   if (!settingOn) return false;
   if (isActiveTerminal) return false;
-  return status === "finished" || status === "waiting" || status === "failed";
+  return isAnnouncedStatus(status);
 }
+
+// ---------------------------------------------------------------------------
+// OS notifications + notification sound
+// ---------------------------------------------------------------------------
+
+/**
+ * When to raise a *native* OS notification (Notification Center / toast /
+ * libnotify) in addition to the in-editor toast.
+ *
+ * `always` is the default: the OS notification is the only channel that reaches
+ * you outside the editor *and* the only one that persists in Notification
+ * Center, so it fires on every announced status. A VS Code toast is invisible
+ * when the window is behind another app, minimized, or on another Space — which
+ * is exactly when "the agent needs you" matters. `whenUnfocused` is available
+ * for people who find the doubled alert while looking at VS Code redundant.
+ */
+export type SystemNotifyMode = "off" | "whenUnfocused" | "always";
+
+/**
+ * A process to spawn, described as file + argv so the caller can use `spawn`
+ * without a shell. Never build these strings by interpolating agent names, repo
+ * paths, or session names into a shell/AppleScript/PowerShell command — those
+ * are attacker-adjacent free text (a session name can contain quotes, `$(...)`,
+ * backticks). Everything user-derived travels as argv or via `env`.
+ */
+export interface SpawnSpec {
+  file: string;
+  args: string[];
+  /** Extra env vars for the child (merged over `process.env` by the caller). */
+  env?: Record<string, string>;
+  /** Tried once if `file` fails to spawn (e.g. ENOENT on Linux audio tools). */
+  fallback?: SpawnSpec;
+}
+
+/**
+ * Whether to raise an OS notification for this status change.
+ *
+ * Deliberately does NOT consider `isActiveTerminal` the way {@link shouldNotify}
+ * does. That suppression assumes "terminal focused ⇒ user is watching", which is
+ * false when the VS Code window itself isn't focused: the agent's terminal can
+ * be the active terminal while the user is in a browser. Window focus is the
+ * only signal that matters here.
+ *
+ * `settingOn` is the master `lifecycleNotifications` switch — off means silent
+ * operation across every channel.
+ */
+export function shouldSystemNotify(
+  mode: SystemNotifyMode,
+  status: LifecycleStatus,
+  windowFocused: boolean,
+  settingOn: boolean
+): boolean {
+  if (!settingOn) return false;
+  if (mode === "off") return false;
+  if (!isAnnouncedStatus(status)) return false;
+  return mode === "always" ? true : !windowFocused;
+}
+
+/**
+ * Whether to play the notification sound. Independent of *where* the
+ * notification is rendered: Agent Quickpick's sound is its signature, so it
+ * fires for an in-editor toast and an OS notification alike (one sound per
+ * event — the caller announces a status change once).
+ */
+export function shouldPlaySound(
+  soundOn: boolean,
+  status: LifecycleStatus,
+  settingOn: boolean
+): boolean {
+  if (!settingOn) return false;
+  if (!soundOn) return false;
+  return isAnnouncedStatus(status);
+}
+
+/**
+ * A macOS bundle identifier is safe to splice into AppleScript source only if it
+ * looks like one. Bundle ids are reverse-DNS: letters, digits, dots, hyphens.
+ * Anything else (a quote, `"` + arbitrary AppleScript) is rejected so the caller
+ * falls back to the unattributed form rather than building an injectable script.
+ */
+export function isSafeBundleId(id: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9.-]{0,127}$/.test(id);
+}
+
+/**
+ * Everything platform-specific the caller knows about the host editor. All
+ * optional: with none of it we still raise a banner, just an unattributed one.
+ */
+export interface NotifyTarget {
+  /** macOS bundle id of the host editor — sets the banner's icon and owner. */
+  bundleId?: string;
+  /**
+   * Absolute path to `terminal-notifier`. A GUI-launched editor inherits
+   * launchd's minimal PATH (`/usr/bin:/bin:/usr/sbin:/sbin`), so Homebrew's
+   * `terminal-notifier` is invisible to a bare-name spawn — the caller resolves
+   * it on disk instead.
+   */
+  notifierPath?: string;
+  /** URI opened when the banner is clicked (our `…://…/focus?session=` link). */
+  openUrl?: string;
+}
+
+/**
+ * Build the OS-notification command for a platform, or `null` where we have no
+ * native channel (then the toast + sound still fire).
+ *
+ * - **macOS**: `terminal-notifier` when the caller found it, falling back to
+ *   `osascript`. A bare `display notification` is attributed to whatever app
+ *   *ran* the script — Script Editor, whose grey icon lands on the banner and
+ *   whose folder opens in Finder when you click it. `terminal-notifier` fixes
+ *   both: `-sender` puts the editor's icon on the banner, and `-open <uri>`
+ *   hands the click to our URI handler, which focuses the agent's terminal
+ *   (`-activate` is the fallback when there's no URI — it merely raises the
+ *   editor). Re-attributing via AppleScript instead (`tell application id ...
+ *   to display notification`) is *not* an option: it sends an Apple event, which
+ *   triggers a TCC automation-consent prompt and blocks `osascript`
+ *   indefinitely until it's answered. The fallback passes title/body through an
+ *   `on run argv` wrapper so they are arguments, never spliced into the
+ *   AppleScript source.
+ * - **Linux**: `notify-send` (argv, nothing to escape).
+ * - **Windows**: PowerShell raising a real WinRT toast, reading title/body from
+ *   env vars. The AUMID is PowerShell's own registered id — an unregistered
+ *   AppId makes `Show()` a silent no-op.
+ */
+export function systemNotifyCommand(
+  platform: NodeJS.Platform,
+  title: string,
+  body: string,
+  target: NotifyTarget = {}
+): SpawnSpec | null {
+  switch (platform) {
+    case "darwin": {
+      const osa: SpawnSpec = {
+        file: "osascript",
+        args: [
+          "-e",
+          "on run argv",
+          "-e",
+          "display notification (item 1 of argv) with title (item 2 of argv)",
+          "-e",
+          "end run",
+          body,
+          title,
+        ],
+      };
+      const { bundleId, notifierPath, openUrl } = target;
+      if (!bundleId || !isSafeBundleId(bundleId)) {
+        return osa;
+      }
+      // A click follows -open when we have a URI (focuses the exact terminal),
+      // otherwise -activate (raises the editor). Both beat Script Editor.
+      const click = openUrl ? ["-open", openUrl] : ["-activate", bundleId];
+      return {
+        file: notifierPath ?? "terminal-notifier",
+        args: ["-title", title, "-message", body, "-sender", bundleId, ...click],
+        // ENOENT (not installed) → the unattributed AppleScript banner.
+        fallback: osa,
+      };
+    }
+    case "linux":
+      return { file: "notify-send", args: [title, body] };
+    case "win32": {
+      const aumid =
+        "{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe";
+      const script = [
+        "$null=[Windows.UI.Notifications.ToastNotificationManager,Windows.UI.Notifications,ContentType=WindowsRuntime]",
+        "$t=[Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)",
+        "$n=$t.GetElementsByTagName('text')",
+        "$null=$n.Item(0).AppendChild($t.CreateTextNode($env:AQP_NOTIFY_TITLE))",
+        "$null=$n.Item(1).AppendChild($t.CreateTextNode($env:AQP_NOTIFY_BODY))",
+        `[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('${aumid}').Show([Windows.UI.Notifications.ToastNotification]::new($t))`,
+      ].join(";");
+      return {
+        file: "powershell",
+        args: [
+          "-NoProfile",
+          "-NonInteractive",
+          "-WindowStyle",
+          "Hidden",
+          "-Command",
+          script,
+        ],
+        env: { AQP_NOTIFY_TITLE: title, AQP_NOTIFY_BODY: body },
+      };
+    }
+    default:
+      return null;
+  }
+}
+
+/**
+ * Build the sound-playback command for a platform, or `null` where we have no
+ * player. The bundled asset is 16-bit PCM WAV because that's the lowest common
+ * denominator: `Media.SoundPlayer` (Windows) plays *only* WAV, and `paplay`
+ * won't take MP3.
+ *
+ * Linux has no single guaranteed player, so `paplay` (PulseAudio/PipeWire)
+ * falls back to `aplay` (ALSA).
+ */
+export function soundPlayCommand(
+  platform: NodeJS.Platform,
+  soundPath: string
+): SpawnSpec | null {
+  switch (platform) {
+    case "darwin":
+      return { file: "afplay", args: [soundPath] };
+    case "linux":
+      return {
+        file: "paplay",
+        args: [soundPath],
+        fallback: { file: "aplay", args: ["-q", soundPath] },
+      };
+    case "win32":
+      return {
+        file: "powershell",
+        args: [
+          "-NoProfile",
+          "-NonInteractive",
+          "-WindowStyle",
+          "Hidden",
+          "-Command",
+          "(New-Object Media.SoundPlayer $env:AQP_SOUND_PATH).PlaySync()",
+        ],
+        env: { AQP_SOUND_PATH: soundPath },
+      };
+    default:
+      return null;
+  }
+}
+
+/**
+ * The single bundled cue, relative to the extension root. One sound for every
+ * announced status: the sound's only job is "look at me", and per-status
+ * variants asked the user to learn a vocabulary for information the toast
+ * already spells out.
+ */
+export const SOUND_FILE_DEFAULT = "media/sounds/notif.wav";
 
 /**
  * The notification message + button label for a status change. Returns `null`
@@ -552,7 +887,10 @@ export function pollExitStatuses(
     const exit = t.exitStatus;
     if (!exit || exit.code === undefined) continue; // still running
     const prev = sessions.get(t.name);
-    if (prev && prev.status !== "running") continue; // already tracked
+    // Skip sessions already in a final state (finished/failed). Everything
+    // else — including `unknown` (re-adopted after a host reload) — is polled
+    // so its real status is discovered once the process has exited.
+    if (prev && (prev.status === "finished" || prev.status === "failed")) continue;
     result.set(t.name, {
       status: exit.code === 0 ? "finished" : "failed",
       exitCode: exit.code,

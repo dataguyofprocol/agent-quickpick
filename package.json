@@ -2,7 +2,7 @@
   "name": "agent-quickpick",
   "displayName": "Agent Quickpick",
   "description": "Quick-pick launcher for agent CLI terminals — Claude, Opencode, Claude Proxy, Claude GLM, oh-my-pi, Droid, Command Code, and your own — opened in the editor area with their own icon and tab color.",
-  "version": "0.5.3",
+  "version": "0.6.3",
   "publisher": "dataguyofprocol",
   "license": "MIT",
   "icon": "icons/icon.png",
@@ -31,7 +31,9 @@
     "quick pick",
     "launcher"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onUri"
+  ],
   "main": "./out/extension.js",
   "scripts": {
     "compile": "tsc -p ./",
@@ -183,12 +185,37 @@
         "agentQuickpick.showStatusBar": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Show an **Agent** button in the status bar that opens the quick pick. Disable to keep the status bar uncluttered and rely on the keybinding (`Cmd/Ctrl+Shift+A`)."
+          "markdownDescription": "Show an **Agent** button in the status bar that opens the quick pick. Disable to keep the status bar uncluttered and rely on the keybindings (`Cmd/Ctrl+Shift+A` to launch, `Cmd/Ctrl+Shift+L` for running sessions)."
         },
         "agentQuickpick.lifecycleNotifications": {
           "type": "boolean",
           "default": true,
           "markdownDescription": "Show a notification when a lifecycle-aware agent (Claude Code, OpenCode, Droid) finishes a task or needs your input. Requires a **one-time global hook install** per agent (prompted automatically the first time you launch it — installed into your user-level agent config, e.g. `~/.claude/settings.json`, so it works in every repo). The hook only reports sessions launched from Agent Quickpick and no-ops elsewhere. Remove via the \"Remove Lifecycle Hooks\" command. Disable for silent operation."
+        },
+        "agentQuickpick.systemNotifications": {
+          "type": "string",
+          "enum": [
+            "off",
+            "whenUnfocused",
+            "always"
+          ],
+          "default": "always",
+          "enumDescriptions": [
+            "Never show OS notifications — in-editor toasts only.",
+            "Show an OS notification only when the VS Code window is not focused.",
+            "Always show an OS notification alongside the in-editor toast."
+          ],
+          "markdownDescription": "Raise a **native OS notification** (macOS Notification Center, Windows toast, Linux `notify-send`) for agent lifecycle events, not just an in-editor toast. Defaults to `always`: the OS notification is the only channel that reaches you outside the editor and the only one that persists in Notification Center, while a VS Code toast is invisible when the window is behind another app or minimized — which is exactly when \"the agent needs you\" matters. Requires `#agentQuickpick.lifecycleNotifications#`."
+        },
+        "agentQuickpick.notificationSound": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Play Agent Quickpick's notification sound when an agent finishes, needs input, or crashes. Fires for both in-editor toasts and OS notifications, so the cue is the same wherever the notification lands. Requires `#agentQuickpick.lifecycleNotifications#`."
+        },
+        "agentQuickpick.notificationSoundPath": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Absolute path to a custom notification sound, replacing the bundled cue. Use **16-bit PCM WAV** — it's the only format playable on all three platforms (Windows' `Media.SoundPlayer` accepts nothing else). Leave empty for the bundled sound."
         }
       }
     },
@@ -211,6 +238,11 @@
         "command": "agentQuickpick.open",
         "key": "ctrl+shift+a",
         "mac": "cmd+shift+a"
+      },
+      {
+        "command": "agentQuickpick.sessions",
+        "key": "ctrl+shift+l",
+        "mac": "cmd+shift+l"
       }
     ]
   },

@@ -180,7 +180,7 @@ async function post(status) {
     // Only report for sessions Agent Quickpick launched (env injected).
     const session = process.env.AQP_SESSION;
     if (!session) return;
-    const body = JSON.stringify({ marker: MARKER, session, status, agentName: "OpenCode" });
+    const body = JSON.stringify({ marker: MARKER, session, status, agentName: "OpenCode", cwd: process.cwd() });
     const u = new URL(process.env.AQP_HOOK_URL || HOOK_URL);
     const lib = await (u.protocol === "https:" ? import("node:https") : import("node:http"));
     await new Promise((resolve) => {

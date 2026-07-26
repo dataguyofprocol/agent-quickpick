@@ -16,8 +16,18 @@ import {
   countByStatus,
   statusBarText,
   statusBarTooltip,
+  filterSessionsByFolder,
+  folderOf,
+  folderBasename,
   STATUS_LABEL,
+  STATUS_GLYPH,
   shouldNotify,
+  shouldSystemNotify,
+  shouldPlaySound,
+  systemNotifyCommand,
+  isSafeBundleId,
+  soundPlayCommand,
+  isAnnouncedStatus,
   notificationMessage,
   buildNodeHookCommand,
   mergeCommandHooks,
@@ -281,6 +291,24 @@ suite("buildNodeHookCommand", () => {
     const wrapped = JSON.stringify({ command: cmd });
     assert.doesNotThrow(() => JSON.parse(wrapped));
   });
+
+  test("forwards cwd from the parsed stdin JSON into the POST body", () => {
+    // The hook reads stdin JSON (the agent's event payload, which for Claude
+    // includes a `cwd` field) and must include it in the POST body so the
+    // extension can attribute the session to a workspace folder. We verify
+    // the source references j.cwd and a `cwd:` field in the stringified body.
+    const cmd = buildNodeHookCommand(HOOK_URL, SESSION, "agentQuickpick:test", "finished");
+    assert.ok(cmd.includes("j?.cwd"), "should read j.cwd defensively");
+    assert.ok(cmd.includes("cwd:"), "should include a cwd field in the POST body");
+  });
+
+  test("cwd defaults to empty string when stdin has no cwd", () => {
+    const cmd = buildNodeHookCommand(HOOK_URL, SESSION, "agentQuickpick:test", "finished");
+    assert.ok(
+      cmd.includes("j?.cwd||''"),
+      "should default to '' when stdin JSON has no cwd"
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -382,6 +410,14 @@ suite("buildOpenCodePluginSource", () => {
     const src = buildOpenCodePluginSource(HOOK_URL, SESSION);
     assert.ok(src.includes("127.0.0.1"), "should embed the server URL");
   });
+
+  test("forwards process.cwd() in the POST body for repo attribution", () => {
+    const src = buildOpenCodePluginSource(HOOK_URL, SESSION);
+    assert.ok(
+      src.includes("cwd: process.cwd()"),
+      "should include process.cwd() in the POST body so sessions can be repo-scoped"
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -439,68 +475,109 @@ function makeState(
   name: string,
   agentName: string,
   status: LifecycleStatus,
-  changedAt = Date.now()
+  changedAt = Date.now(),
+  extra: Partial<Pick<SessionState, "cwd" | "launchedInFolder">> = {}
 ): SessionState {
-  return { name, agentName, status, changedAt };
+  return { name, agentName, status, changedAt, ...extra };
+}
+
+/** Build a complete status-counts record (all keys, zero by default). */
+function counts(
+  overrides: Partial<Record<LifecycleStatus, number>> = {}
+): Record<LifecycleStatus, number> {
+  return {
+    running: 0,
+    finished: 0,
+    waiting: 0,
+    failed: 0,
+    unknown: 0,
+    ...overrides,
+  };
 }
 
 suite("countByStatus", () => {
   test("empty → all zero", () => {
-    const counts = countByStatus([]);
-    assert.strictEqual(counts.running, 0);
-    assert.strictEqual(counts.finished, 0);
-    assert.strictEqual(counts.waiting, 0);
-    assert.strictEqual(counts.failed, 0);
+    const c = countByStatus([]);
+    assert.strictEqual(c.running, 0);
+    assert.strictEqual(c.finished, 0);
+    assert.strictEqual(c.waiting, 0);
+    assert.strictEqual(c.failed, 0);
+    assert.strictEqual(c.unknown, 0);
   });
 
   test("mixed statuses tallied correctly", () => {
-    const counts = countByStatus([
+    const c = countByStatus([
       makeState("Claude", "Claude", "running"),
       makeState("Codex", "Codex", "running"),
       makeState("Aider", "Aider", "finished"),
       makeState("Gemini", "Gemini", "waiting"),
       makeState("Droid", "Droid", "failed"),
     ]);
-    assert.strictEqual(counts.running, 2);
-    assert.strictEqual(counts.finished, 1);
-    assert.strictEqual(counts.waiting, 1);
-    assert.strictEqual(counts.failed, 1);
+    assert.strictEqual(c.running, 2);
+    assert.strictEqual(c.finished, 1);
+    assert.strictEqual(c.waiting, 1);
+    assert.strictEqual(c.failed, 1);
+    assert.strictEqual(c.unknown, 0);
+  });
+
+  test("counts unknown separately", () => {
+    const c = countByStatus([
+      makeState("Claude", "Claude", "unknown"),
+      makeState("Codex", "Codex", "unknown"),
+      makeState("Aider", "Aider", "running"),
+    ]);
+    assert.strictEqual(c.unknown, 2);
+    assert.strictEqual(c.running, 1);
   });
 });
 
 suite("statusBarText", () => {
   test("all-zero → static default", () => {
     assert.strictEqual(
-      statusBarText({ running: 0, finished: 0, waiting: 0, failed: 0 }),
+      statusBarText(counts()),
       "$(agent-quickpick) Agent"
     );
   });
 
   test("running only → count with ●", () => {
     assert.strictEqual(
-      statusBarText({ running: 2, finished: 0, waiting: 0, failed: 0 }),
+      statusBarText(counts({ running: 2 })),
       "$(agent-quickpick) 2●"
     );
   });
 
   test("mixed → all non-zero groups", () => {
     assert.strictEqual(
-      statusBarText({ running: 1, finished: 1, waiting: 1, failed: 1 }),
+      statusBarText(counts({ running: 1, finished: 1, waiting: 1, failed: 1 })),
       "$(agent-quickpick) 1● 1✓ 1⏸ 1✗"
     );
   });
 
   test("finished only → ✓", () => {
     assert.strictEqual(
-      statusBarText({ running: 0, finished: 3, waiting: 0, failed: 0 }),
+      statusBarText(counts({ finished: 3 })),
       "$(agent-quickpick) 3✓"
     );
   });
 
   test("waiting only → ⏸", () => {
     assert.strictEqual(
-      statusBarText({ running: 0, finished: 0, waiting: 1, failed: 0 }),
+      statusBarText(counts({ waiting: 1 })),
       "$(agent-quickpick) 1⏸"
+    );
+  });
+
+  test("unknown only → ○ (reconnecting)", () => {
+    assert.strictEqual(
+      statusBarText(counts({ unknown: 2 })),
+      "$(agent-quickpick) 2○"
+    );
+  });
+
+  test("running + unknown are both shown, distinct glyphs", () => {
+    assert.strictEqual(
+      statusBarText(counts({ running: 1, unknown: 1 })),
+      "$(agent-quickpick) 1● 1○"
     );
   });
 });
@@ -511,6 +588,17 @@ suite("STATUS_LABEL", () => {
     assert.strictEqual(STATUS_LABEL.finished, "done");
     assert.strictEqual(STATUS_LABEL.waiting, "blocked");
     assert.strictEqual(STATUS_LABEL.failed, "failed");
+    assert.strictEqual(STATUS_LABEL.unknown, "reconnecting");
+  });
+});
+
+suite("STATUS_GLYPH", () => {
+  test("maps each status to a distinct glyph", () => {
+    assert.strictEqual(STATUS_GLYPH.running, "●");
+    assert.strictEqual(STATUS_GLYPH.finished, "✓");
+    assert.strictEqual(STATUS_GLYPH.waiting, "⏸");
+    assert.strictEqual(STATUS_GLYPH.failed, "✗");
+    assert.strictEqual(STATUS_GLYPH.unknown, "○");
   });
 });
 
@@ -552,6 +640,134 @@ suite("statusBarTooltip", () => {
     assert.ok(codexIdx < geminiIdx, "Codex (300) before Gemini (200)");
     assert.ok(geminiIdx < claudeIdx, "Gemini (200) before Claude (100)");
   });
+
+  test("appends folder basename when cwd is set", () => {
+    const tooltip = statusBarTooltip([
+      makeState("Claude", "Claude", "running", 100, { cwd: "/Users/me/projects/my-app" }),
+    ]);
+    assert.ok(tooltip.includes("my-app"), "should append the folder basename");
+  });
+
+  test("appends folder basename when only launchedInFolder is set", () => {
+    const tooltip = statusBarTooltip([
+      makeState("Claude", "Claude", "running", 100, {
+        launchedInFolder: "/home/parth/other-repo",
+      }),
+    ]);
+    assert.ok(tooltip.includes("other-repo"), "should fall back to launch folder");
+  });
+
+  test("no suffix when neither cwd nor launchedInFolder is set", () => {
+    const tooltip = statusBarTooltip([
+      makeState("Claude", "Claude", "running", 100),
+    ]);
+    assert.ok(!tooltip.includes("·"), "should not append a folder suffix");
+  });
+
+  test("uses 'reconnecting' label for unknown status", () => {
+    const tooltip = statusBarTooltip([
+      makeState("Claude", "Claude", "unknown", 100),
+    ]);
+    assert.ok(tooltip.includes("reconnecting"));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Repo-scoping helpers (folderOf / folderBasename / filterSessionsByFolder)
+// ---------------------------------------------------------------------------
+
+suite("folderOf", () => {
+  test("prefers cwd over launchedInFolder", () => {
+    const got = folderOf(
+      makeState("Claude", "Claude", "running", 100, {
+        cwd: "/a/cwd",
+        launchedInFolder: "/b/launch",
+      })
+    );
+    assert.strictEqual(got, "/a/cwd");
+  });
+
+  test("falls back to launchedInFolder when cwd is absent", () => {
+    const got = folderOf(
+      makeState("Claude", "Claude", "running", 100, {
+        launchedInFolder: "/b/launch",
+      })
+    );
+    assert.strictEqual(got, "/b/launch");
+  });
+
+  test("returns undefined when neither is set (re-adopted, no hook yet)", () => {
+    const got = folderOf(makeState("Claude", "Claude", "unknown", 100));
+    assert.strictEqual(got, undefined);
+  });
+});
+
+suite("folderBasename", () => {
+  test("plain unix path", () => {
+    assert.strictEqual(folderBasename("/Users/me/projects/my-app"), "my-app");
+  });
+
+  test("plain windows path", () => {
+    assert.strictEqual(folderBasename("C:\\dev\\projects\\my-app"), "my-app");
+  });
+
+  test("strips trailing slash", () => {
+    assert.strictEqual(folderBasename("/Users/me/projects/my-app/"), "my-app");
+    assert.strictEqual(folderBasename("C:\\dev\\my-app\\"), "my-app");
+  });
+
+  test("bare name passthrough", () => {
+    assert.strictEqual(folderBasename("my-app"), "my-app");
+  });
+});
+
+suite("filterSessionsByFolder", () => {
+  test("returns everything when activeFolder is undefined (no workspace)", () => {
+    const states = [
+      makeState("Claude", "Claude", "running", 100, { cwd: "/a" }),
+      makeState("Codex", "Codex", "running", 100, { cwd: "/b" }),
+      makeState("ReAdopted", "ReAdopted", "unknown", 100),
+    ];
+    assert.strictEqual(filterSessionsByFolder(states, undefined).length, 3);
+  });
+
+  test("filters to sessions whose cwd matches the active folder", () => {
+    const states = [
+      makeState("Claude", "Claude", "running", 100, { cwd: "/repo/alpha" }),
+      makeState("Codex", "Codex", "running", 100, { cwd: "/repo/beta" }),
+    ];
+    const filtered = filterSessionsByFolder(states, "/repo/alpha");
+    assert.strictEqual(filtered.length, 1);
+    assert.strictEqual(filtered[0].name, "Claude");
+  });
+
+  test("falls back to launchedInFolder when cwd is absent", () => {
+    const states = [
+      makeState("Claude", "Claude", "running", 100, {
+        launchedInFolder: "/repo/alpha",
+      }),
+      makeState("Codex", "Codex", "running", 100, {
+        launchedInFolder: "/repo/beta",
+      }),
+    ];
+    const filtered = filterSessionsByFolder(states, "/repo/alpha");
+    assert.strictEqual(filtered.length, 1);
+    assert.strictEqual(filtered[0].name, "Claude");
+  });
+
+  test("excludes re-adopted sessions (no cwd, no launchedInFolder) when a folder is set", () => {
+    const states = [
+      makeState("Claude", "Claude", "unknown", 100),
+      makeState("Codex", "Codex", "running", 100, { cwd: "/repo/alpha" }),
+    ];
+    const filtered = filterSessionsByFolder(states, "/repo/alpha");
+    assert.strictEqual(filtered.length, 1);
+    assert.strictEqual(filtered[0].name, "Codex");
+  });
+
+  test("empty input → empty output", () => {
+    assert.strictEqual(filterSessionsByFolder([], "/anywhere").length, 0);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -579,6 +795,12 @@ suite("shouldNotify", () => {
 
   test("never fires on running", () => {
     assert.ok(!shouldNotify("running", false, true));
+  });
+
+  test("never fires on unknown (no confident state to announce)", () => {
+    assert.ok(!shouldNotify("unknown", false, true));
+    assert.ok(!shouldNotify("unknown", true, true));
+    assert.ok(!shouldNotify("unknown", false, false));
   });
 
   test("fires on failed (crashes must be visible)", () => {
@@ -777,5 +999,210 @@ suite("OpenCode plugin source uses ESM dynamic import (Fix 4)", () => {
   test("arms a 2s socket timeout", () => {
     const src = buildOpenCodePluginSource(HOOK_URL, SESSION);
     assert.ok(src.includes("setTimeout(2000"), "plugin should arm a 2s socket timeout");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// OS notifications + sound
+// ---------------------------------------------------------------------------
+
+const ANNOUNCED: LifecycleStatus[] = ["finished", "waiting", "failed"];
+const SILENT: LifecycleStatus[] = ["running", "unknown"];
+
+suite("shouldSystemNotify", () => {
+  test("whenUnfocused: fires only while the window is unfocused", () => {
+    for (const s of ANNOUNCED) {
+      assert.ok(shouldSystemNotify("whenUnfocused", s, false, true), `${s} unfocused`);
+      assert.ok(!shouldSystemNotify("whenUnfocused", s, true, true), `${s} focused`);
+    }
+  });
+
+  test("always: fires regardless of focus", () => {
+    for (const s of ANNOUNCED) {
+      assert.ok(shouldSystemNotify("always", s, true, true));
+      assert.ok(shouldSystemNotify("always", s, false, true));
+    }
+  });
+
+  test("off: never fires", () => {
+    for (const s of ANNOUNCED) {
+      assert.ok(!shouldSystemNotify("off", s, false, true));
+      assert.ok(!shouldSystemNotify("off", s, true, true));
+    }
+  });
+
+  test("lifecycleNotifications off is a master switch", () => {
+    for (const s of ANNOUNCED) {
+      assert.ok(!shouldSystemNotify("always", s, false, false));
+      assert.ok(!shouldSystemNotify("whenUnfocused", s, false, false));
+    }
+  });
+
+  test("never fires for running/unknown", () => {
+    for (const s of SILENT) {
+      assert.ok(!shouldSystemNotify("always", s, false, true), s);
+    }
+  });
+
+  test("ignores terminal focus by design — unfocused window still notifies", () => {
+    // Regression guard: shouldNotify() suppresses on active terminal; the OS
+    // path must NOT inherit that, or a backgrounded window goes silent.
+    assert.ok(!shouldNotify("finished", true, true));
+    assert.ok(shouldSystemNotify("whenUnfocused", "finished", false, true));
+  });
+});
+
+suite("shouldPlaySound", () => {
+  test("fires for every announced status", () => {
+    for (const s of ANNOUNCED) {
+      assert.ok(shouldPlaySound(true, s, true), s);
+    }
+  });
+
+  test("silent for running/unknown", () => {
+    for (const s of SILENT) {
+      assert.ok(!shouldPlaySound(true, s, true), s);
+    }
+  });
+
+  test("respects its own setting and the master switch", () => {
+    assert.ok(!shouldPlaySound(false, "finished", true));
+    assert.ok(!shouldPlaySound(true, "finished", false));
+  });
+
+  test("independent of where the notification renders", () => {
+    // No focus/terminal params at all — the cue is the same wherever the
+    // notification lands (in-editor toast or OS notification).
+    assert.strictEqual(shouldPlaySound.length, 3);
+  });
+});
+
+suite("isAnnouncedStatus", () => {
+  test("finished/waiting/failed only", () => {
+    for (const s of ANNOUNCED) assert.ok(isAnnouncedStatus(s), s);
+    for (const s of SILENT) assert.ok(!isAnnouncedStatus(s), s);
+  });
+});
+
+suite("systemNotifyCommand", () => {
+  const TITLE = "Agent Quickpick";
+  // Hostile text: a session/repo name can legitimately contain these.
+  const BODY = '✓ Claude finished · "$(id)" `whoami` \\ \'x\'';
+
+  test("darwin without a bundle id passes body/title as argv, never spliced into AppleScript", () => {
+    const spec = systemNotifyCommand("darwin", TITLE, BODY);
+    assert.ok(spec);
+    assert.strictEqual(spec!.file, "osascript");
+    // The user-derived strings appear as standalone argv entries...
+    assert.ok(spec!.args.includes(BODY), "body should be its own argv entry");
+    assert.ok(spec!.args.includes(TITLE), "title should be its own argv entry");
+    // ...and the script fragments reference argv, not the text itself.
+    const script = spec!.args.filter((a) => a !== BODY && a !== TITLE).join(" ");
+    assert.ok(script.includes("item 1 of argv"));
+    assert.ok(script.includes("item 2 of argv"));
+    assert.ok(!script.includes("$(id)"), "no user text inside the script");
+  });
+
+  test("darwin with a bundle id prefers terminal-notifier, falls back to osascript", () => {
+    const spec = systemNotifyCommand("darwin", TITLE, BODY, {
+      bundleId: "com.microsoft.VSCode",
+    });
+    assert.ok(spec);
+    assert.strictEqual(spec!.file, "terminal-notifier");
+    // -sender fixes the banner icon, -activate makes a click raise the editor.
+    assert.deepStrictEqual(spec!.args, [
+      "-title",
+      TITLE,
+      "-message",
+      BODY,
+      "-sender",
+      "com.microsoft.VSCode",
+      "-activate",
+      "com.microsoft.VSCode",
+    ]);
+    // Not installed (ENOENT) must still produce a banner.
+    assert.strictEqual(spec!.fallback?.file, "osascript");
+  });
+
+  test("darwin uses the resolved notifier path, not the bare name", () => {
+    // A GUI-launched editor has launchd's PATH — Homebrew is not on it.
+    const spec = systemNotifyCommand("darwin", TITLE, BODY, {
+      bundleId: "com.microsoft.VSCode",
+      notifierPath: "/opt/homebrew/bin/terminal-notifier",
+    });
+    assert.strictEqual(spec!.file, "/opt/homebrew/bin/terminal-notifier");
+  });
+
+  test("darwin routes a click through -open when given a focus URI", () => {
+    const uri = "vscode://pub.agent-quickpick/focus?session=Claude%20(2)";
+    const spec = systemNotifyCommand("darwin", TITLE, BODY, {
+      bundleId: "com.microsoft.VSCode",
+      openUrl: uri,
+    });
+    assert.ok(spec!.args.includes("-open"));
+    assert.strictEqual(spec!.args[spec!.args.indexOf("-open") + 1], uri);
+    // -open supersedes -activate: focusing the terminal beats raising the app.
+    assert.ok(!spec!.args.includes("-activate"));
+  });
+
+  test("darwin rejects an unsafe bundle id rather than splicing it", () => {
+    const evil = 'com.x" to do shell script "id';
+    assert.strictEqual(isSafeBundleId(evil), false);
+    assert.strictEqual(isSafeBundleId("com.microsoft.VSCode-insiders"), true);
+    const spec = systemNotifyCommand("darwin", TITLE, BODY, { bundleId: evil });
+    assert.strictEqual(spec!.file, "osascript");
+    assert.ok(
+      !spec!.args.join(" ").includes("do shell script"),
+      "unsafe id must not reach the script or argv"
+    );
+  });
+
+  test("linux uses notify-send with argv", () => {
+    const spec = systemNotifyCommand("linux", TITLE, BODY);
+    assert.deepStrictEqual(spec, { file: "notify-send", args: [TITLE, BODY] });
+  });
+
+  test("win32 passes text via env, not the command line", () => {
+    const spec = systemNotifyCommand("win32", TITLE, BODY);
+    assert.ok(spec);
+    assert.strictEqual(spec!.file, "powershell");
+    assert.strictEqual(spec!.env?.AQP_NOTIFY_TITLE, TITLE);
+    assert.strictEqual(spec!.env?.AQP_NOTIFY_BODY, BODY);
+    const cmd = spec!.args.join(" ");
+    assert.ok(!cmd.includes(BODY), "body must not reach the command line");
+    assert.ok(cmd.includes("$env:AQP_NOTIFY_BODY"));
+    assert.ok(cmd.includes("-NoProfile"));
+  });
+
+  test("unknown platform → null (toast + sound still fire)", () => {
+    assert.strictEqual(systemNotifyCommand("aix", TITLE, BODY), null);
+  });
+});
+
+suite("soundPlayCommand", () => {
+  const P = "/Users/me/Agent Quickpick/media/sounds/notif.wav";
+
+  test("darwin uses afplay with the path as argv", () => {
+    assert.deepStrictEqual(soundPlayCommand("darwin", P), {
+      file: "afplay",
+      args: [P],
+    });
+  });
+
+  test("linux falls back from paplay to aplay", () => {
+    const spec = soundPlayCommand("linux", P);
+    assert.strictEqual(spec!.file, "paplay");
+    assert.strictEqual(spec!.fallback?.file, "aplay");
+    assert.ok(spec!.fallback?.args.includes(P));
+  });
+
+  test("win32 passes the path via env (spaces would break the command line)", () => {
+    const spec = soundPlayCommand("win32", P);
+    assert.strictEqual(spec!.env?.AQP_SOUND_PATH, P);
+    assert.ok(!spec!.args.join(" ").includes(P));
+  });
+
+  test("unknown platform → null", () => {
+    assert.strictEqual(soundPlayCommand("aix", P), null);
   });
 });
