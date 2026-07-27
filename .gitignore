@@ -11,6 +11,7 @@ out/
 # Test runner
 .vscode-test/
 .zcode/
+.commandcode/
 .opencode/
 .claude/*
 !.claude/skills/
