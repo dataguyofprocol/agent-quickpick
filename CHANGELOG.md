@@ -6,6 +6,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] — 2026-07-28
+
+### Fixed
+- **Lifecycle notifications silently self-heal after an update, no relaunch needed.** Two compounding bugs fixed: (1) hook installs were only ever checked by marker presence, so a schema change in a later release never reached existing users — hooks now carry a version tag and are silently re-installed on activation when stale. (2) the hook server's port was baked into a frozen per-terminal env var, so any extension restart permanently orphaned already-open terminals — the current port is now also written to a stable file under global storage and checked first, so live terminals recover on their next hook event even after a restart.
+
 ## [0.7.0] — 2026-07-27
 
 ### Added

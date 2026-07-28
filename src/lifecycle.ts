@@ -192,7 +192,12 @@ export interface CommandHookAdapter extends BaseAdapter {
    * twice produces the same result as merging once. Must not clobber keys the
    * user added themselves.
    */
-  mergeHooks(parsedConfig: unknown, hookUrl: string, session: string): unknown;
+  mergeHooks(
+    parsedConfig: unknown,
+    hookUrl: string,
+    session: string,
+    portFilePath: string
+  ): unknown;
 
   /**
    * Strip *only* our hooks (by {@link BaseAdapter.marker}) from a parsed config
@@ -201,8 +206,15 @@ export interface CommandHookAdapter extends BaseAdapter {
    */
   stripHooks(parsedConfig: unknown): unknown;
 
-  /** True iff our hooks are present in a parsed config. */
+  /** True iff our hooks (any schema version) are present in a parsed config. */
   hasOurHooks(parsedConfig: unknown): boolean;
+
+  /**
+   * True iff our hooks are present *and* were written by the current
+   * {@link HOOK_SCHEMA_VERSION}. False (not just "absent") signals
+   * `installHook` should rewrite — see `LifecycleContext.autoUpgradeHooks`.
+   */
+  hasCurrentHooks(parsedConfig: unknown): boolean;
 }
 
 /**
@@ -218,8 +230,12 @@ export interface PluginFileAdapter extends BaseAdapter {
    * ".config/opencode/plugin/agent-quickpick-lifecycle.js".
    */
   readonly pluginPath: string;
-  /** Generate the plugin file's source (embeds the hook URL as a fallback). */
-  buildSource(hookUrl: string, session: string): string;
+  /**
+   * Generate the plugin file's source (embeds the hook URL as a fallback, and
+   * `portFilePath` so a stale-env session can still find the current server —
+   * see {@link buildNodeHookCommand}'s doc for the same resolution order).
+   */
+  buildSource(hookUrl: string, session: string, portFilePath: string): string;
 }
 
 export type LifecycleAdapter = CommandHookAdapter | PluginFileAdapter;
@@ -229,31 +245,56 @@ export type LifecycleAdapter = CommandHookAdapter | PluginFileAdapter;
 // ---------------------------------------------------------------------------
 
 /**
+ * Bumped whenever the generated hook command/plugin source changes shape
+ * (new events wired, new payload fields, new URL-resolution strategy). Embedded
+ * as a `<marker>:v<N>` token alongside the marker so an already-installed hook
+ * can be told apart from a stale one written by an older extension version —
+ * see {@link hasCurrentCommandHooks} and `LifecycleContext.autoUpgradeHooks`
+ * (extension.ts), which silently rewrites stale installs on activation so
+ * existing users get new hook behavior without reinstalling anything.
+ */
+export const HOOK_SCHEMA_VERSION = 2;
+
+/** The version tag embedded alongside a marker; shared by embed + detect sites. */
+function versionTag(marker: string): string {
+  return `${marker}:v${HOOK_SCHEMA_VERSION}`;
+}
+
+/**
  * Generate a self-contained `node -e` command that reads stdin JSON, reads the
  * lifecycle server URL + session name from env, and POSTs a hook payload to the
- * server. Embeds the marker as a comment + payload field so the hook is
- * unambiguously ours.
+ * server. Embeds the marker (+ schema version tag) as a comment + payload field
+ * so the hook is unambiguously ours and its generation is detectable.
+ *
+ * URL resolution order: the port file at `portFilePath` (rewritten with the
+ * current port on every extension activation — see `startLifecycleServer`'s
+ * caller in extension.ts) → `AQP_HOOK_URL` env (frozen at terminal-launch time,
+ * so stale after any restart) → the URL baked in at install time. Checking the
+ * port file first means a terminal opened *before* an extension restart still
+ * reaches the new server on its very next hook event, with no relaunch needed
+ * — the on-disk hook command itself is re-read fresh by the agent CLI every
+ * time, unlike the terminal's env.
  *
  * Path-free → survives extension version updates regardless of install path.
- * Uses only Node built-ins (`http`), so it works on any machine with Node.
+ * Uses only Node built-ins (`http`, `fs`), so it works on any machine with Node.
  */
 export function buildNodeHookCommand(
   hookUrl: string,
   session: string,
   marker: string,
-  status: LifecycleStatus
+  status: LifecycleStatus,
+  portFilePath: string
 ): string {
-  // Read stdin (the agent pipes JSON event data), then POST to our server.
-  // The command is a single line so it embeds cleanly in a JSON string value.
-  const body = JSON.stringify({ marker, session, status });
   // Inline-escape for a double-quoted JSON string value.
   const escapedUrl = hookUrl.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-  const escapedBody = body.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  const escapedPortFilePath = portFilePath
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"');
   // Guard first: this hook is installed globally, so it runs on *every* Stop/
   // Notification for this agent — even sessions we didn't launch. When
   // AQP_SESSION is absent (not one of ours), exit immediately: a no-op, no
   // socket, no dead-port noise.
-  return `node -e "if(!process.env.AQP_SESSION){process.exit(0)}const h=require('http'),u=process.env.AQP_HOOK_URL||'${escapedUrl}';let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d||'{}');const b=JSON.stringify({marker:'${marker}',session:process.env.AQP_SESSION||'${session}',status:'${status}',agentName:'${marker.split(':')[1]||''}',cwd:j?.cwd||''});const r=h.request(u,{method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(b)}});r.setTimeout(2000,()=>r.destroy());r.on('error',()=>{});r.end(b)}catch{}})"`;
+  return `node -e "/*${versionTag(marker)}*/if(!process.env.AQP_SESSION){process.exit(0)}const h=require('http'),fs=require('fs');let fileUrl;try{fileUrl=JSON.parse(fs.readFileSync('${escapedPortFilePath}','utf8')).url}catch(e){}const u=fileUrl||process.env.AQP_HOOK_URL||'${escapedUrl}';let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d||'{}');const b=JSON.stringify({marker:'${marker}',session:process.env.AQP_SESSION||'${session}',status:'${status}',agentName:'${marker.split(':')[1]||''}',cwd:j?.cwd||''});const r=h.request(u,{method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(b)}});r.setTimeout(2000,()=>r.destroy());r.on('error',()=>{});r.end(b)}catch(e){}})"`;
 }
 
 /**
@@ -278,7 +319,8 @@ export function mergeCommandHooks(
   events: readonly string[],
   hookUrl: string,
   session: string,
-  marker: string
+  marker: string,
+  portFilePath: string
 ): unknown {
   const config = cloneObject(parsedConfig);
   const hooksSection = cloneObject(config.hooks);
@@ -299,7 +341,13 @@ export function mergeCommandHooks(
       // One entry per lifecycle status we care about for this event.
       const statuses = statusesForEvent(event);
       for (const status of statuses) {
-        const command = buildNodeHookCommand(hookUrl, session, marker, status);
+        const command = buildNodeHookCommand(
+          hookUrl,
+          session,
+          marker,
+          status,
+          portFilePath
+        );
         arr.push({
           hooks: [{ type: "command", command }],
         });
@@ -347,11 +395,29 @@ export function stripCommandHooks(
 }
 
 /**
- * Check whether our command hooks (by marker) exist in a config.
+ * Check whether our command hooks (by marker) exist in a config, regardless of
+ * which schema version wrote them. Used for dedup/removal, where any version of
+ * our hook must be recognized as "ours."
  */
 export function hasCommandHooks(parsedConfig: unknown, marker: string): boolean {
   if (!parsedConfig || typeof parsedConfig !== "object") return false;
   return JSON.stringify(parsedConfig).includes(marker);
+}
+
+/**
+ * Check whether our command hooks in a config were written by the *current*
+ * {@link HOOK_SCHEMA_VERSION}. False for a config with no hooks of ours at all,
+ * and false for one written by an older version — both cases mean
+ * `installHook` should (re)write the current form. Used by
+ * `LifecycleContext.autoUpgradeHooks` (extension.ts) to silently upgrade
+ * existing users' installed hooks with no prompt.
+ */
+export function hasCurrentCommandHooks(
+  parsedConfig: unknown,
+  marker: string
+): boolean {
+  if (!parsedConfig || typeof parsedConfig !== "object") return false;
+  return JSON.stringify(parsedConfig).includes(versionTag(marker));
 }
 
 /**

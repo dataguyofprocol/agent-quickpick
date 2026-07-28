@@ -28,6 +28,7 @@ import {
   mergeCommandHooks,
   stripCommandHooks,
   hasCommandHooks,
+  hasCurrentCommandHooks,
 } from "./lifecycle";
 
 // ---------------------------------------------------------------------------
@@ -51,8 +52,20 @@ function commandHookAdapter(
     configPath,
     marker,
 
-    mergeHooks(parsedConfig: unknown, hookUrl: string, session: string): unknown {
-      return mergeCommandHooks(parsedConfig, events, hookUrl, session, marker);
+    mergeHooks(
+      parsedConfig: unknown,
+      hookUrl: string,
+      session: string,
+      portFilePath: string
+    ): unknown {
+      return mergeCommandHooks(
+        parsedConfig,
+        events,
+        hookUrl,
+        session,
+        marker,
+        portFilePath
+      );
     },
 
     stripHooks(parsedConfig: unknown): unknown {
@@ -61,6 +74,10 @@ function commandHookAdapter(
 
     hasOurHooks(parsedConfig: unknown): boolean {
       return hasCommandHooks(parsedConfig, marker);
+    },
+
+    hasCurrentHooks(parsedConfig: unknown): boolean {
+      return hasCurrentCommandHooks(parsedConfig, marker);
     },
   };
 }
@@ -166,13 +183,18 @@ export function resolveOpenCodeConfigDir(
 export function buildOpenCodePluginSource(
   hookUrl: string,
   // Intentionally unused: see the JSDoc above.
-  _session: string
+  _session: string,
+  portFilePath: string
 ): string {
-  // Embed the marker so the file is unambiguously ours.
+  // Embed the marker so the file is unambiguously ours. Always regenerated
+  // unconditionally on install/auto-upgrade (see installHook in extension.ts),
+  // so there's no separate version tag to detect here — the file is simply
+  // always current.
   return `// ${OPENCODE_PLUGIN_MARKER}
 // Installed by Agent Quickpick. Remove via the "Remove Lifecycle Hooks" command
 // or by deleting this file.
 const HOOK_URL = ${JSON.stringify(hookUrl)};
+const PORT_FILE_PATH = ${JSON.stringify(portFilePath)};
 const MARKER = ${JSON.stringify(OPENCODE_PLUGIN_MARKER)};
 
 async function post(status) {
@@ -181,7 +203,17 @@ async function post(status) {
     const session = process.env.AQP_SESSION;
     if (!session) return;
     const body = JSON.stringify({ marker: MARKER, session, status, agentName: "OpenCode", cwd: process.cwd() });
-    const u = new URL(process.env.AQP_HOOK_URL || HOOK_URL);
+    // Resolution order: the port file (rewritten with the current port on
+    // every extension activation) → the frozen per-terminal env var (stale
+    // after a restart) → the URL baked in at install time. Checking the file
+    // first means a session launched before an extension restart still
+    // reaches the new server, no relaunch needed.
+    const fs = await import("node:fs");
+    let fileUrl;
+    try {
+      fileUrl = JSON.parse(fs.readFileSync(PORT_FILE_PATH, "utf8")).url;
+    } catch {}
+    const u = new URL(fileUrl || process.env.AQP_HOOK_URL || HOOK_URL);
     const lib = await (u.protocol === "https:" ? import("node:https") : import("node:http"));
     await new Promise((resolve) => {
       const r = lib.request(

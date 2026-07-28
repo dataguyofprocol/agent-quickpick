@@ -953,6 +953,31 @@ class LifecycleContext {
     this.server = startLifecycleServer((payload) => this.onHookEvent(payload));
     this.serverUrlPromise = this.server.url;
 
+    // Persist the current URL to a stable, install-time-baked path so a hook
+    // command written before this activation (frozen `AQP_HOOK_URL` env, dead
+    // port) can still find the live server — see the resolution order
+    // documented on `buildNodeHookCommand`. Best-effort: a write failure just
+    // means stale-terminal recovery falls back to the frozen env var, same as
+    // before this existed.
+    this.serverUrlPromise
+      .then(async (url) => {
+        try {
+          await fs.promises.mkdir(path.dirname(this.portFilePath()), {
+            recursive: true,
+          });
+          await fs.promises.writeFile(
+            this.portFilePath(),
+            JSON.stringify({ url }),
+            "utf8"
+          );
+        } catch {
+          // Non-fatal — see comment above.
+        }
+      })
+      .catch(() => {
+        // Server failed to bind — nothing to persist.
+      });
+
     // Universal fallback: poll exit statuses every 3s for agents whose process
     // has exited (detects finished/failed even without hooks). The agent set is
     // recomputed each tick so a runtime config change (adding a new agent entry)
@@ -1259,6 +1284,29 @@ class LifecycleContext {
   }
 
   /**
+   * Silently upgrade every already-installed lifecycle hook to the current
+   * {@link HOOK_SCHEMA_VERSION}, with no prompt. Called once from `activate()`
+   * on every window (cheap no-op once everything's current). Deliberately
+   * scoped to adapters the user already opted into: an adapter that was never
+   * installed, or whose install was explicitly declined, is left untouched —
+   * this is an upgrade path, not a way to sneak past a decline. Per-adapter
+   * failures are swallowed so one broken config can't block the others.
+   */
+  async autoUpgradeHooks(): Promise<void> {
+    for (const adapter of Object.values(LIFECYCLE_ADAPTERS)) {
+      const flagKey = `hooks.${adapter.marker}.global`;
+      if (this.context.globalState.get<string>(flagKey) !== "installed") {
+        continue;
+      }
+      try {
+        await this.installHook(adapter);
+      } catch {
+        // Non-fatal — same posture as installHook's other callers.
+      }
+    }
+  }
+
+  /**
    * Resolve the bound server URL. The port isn't known until the socket is
    * listening, so this awaits the listening event rather than reading
    * `server.address()` synchronously (which yields port 0).
@@ -1267,14 +1315,39 @@ class LifecycleContext {
     return this.serverUrlPromise;
   }
 
-  /** Write the hook into the adapter's global config / plugin file. */
+  /**
+   * Stable path (survives every restart, unlike the port itself) where the
+   * current server URL is persisted — see the constructor. Generated hook
+   * commands/plugin sources are given this exact path at install/upgrade time
+   * so they can find the live server even when their own frozen env var
+   * (`AQP_HOOK_URL`, baked into a terminal already open before a restart) is
+   * stale. Under `globalStorageUri` since that's the one directory this
+   * extension already owns per-install, independent of any workspace.
+   */
+  private portFilePath(): string {
+    return path.join(this.context.globalStorageUri.fsPath, "hook-server.json");
+  }
+
+  /**
+   * Write the hook into the adapter's global config / plugin file — installing
+   * fresh, or silently upgrading a stale install (written by an older
+   * extension version) to the current {@link HOOK_SCHEMA_VERSION}. Idempotent:
+   * a no-op when the current version is already present.
+   *
+   * Called both from the one-time install prompt ({@link maybePromptInstall})
+   * and from {@link autoUpgradeHooks} (which re-invokes it, unprompted, for
+   * every adapter the user already has installed — so a version bump reaches
+   * existing users on their next activation with no action on their part).
+   */
   private async installHook(adapter: LifecycleAdapter): Promise<void> {
     const fsPath = this.adapterFsPath(adapter);
     const hookUrl = await this.hookUrl();
+    const portFilePath = this.portFilePath();
 
     if (adapter.kind === "plugin-file") {
+      // Always regenerated — see buildOpenCodePluginSource's doc comment.
       await fs.promises.mkdir(path.dirname(fsPath), { recursive: true });
-      const source = adapter.buildSource(hookUrl, "");
+      const source = adapter.buildSource(hookUrl, "", portFilePath);
       await fs.promises.writeFile(fsPath, source, "utf8");
       return;
     }
@@ -1287,10 +1360,16 @@ class LifecycleContext {
     } catch {
       // File doesn't exist yet — start from {}.
     }
-    if (adapter.hasOurHooks(existing)) {
-      return; // already installed (idempotent)
+    if (adapter.hasCurrentHooks(existing)) {
+      return; // already installed and current (idempotent)
     }
-    const merged = adapter.mergeHooks(existing, hookUrl, "");
+    // Strip a stale (older-schema) install of ours before re-merging the
+    // current form, so upgrading doesn't leave the old hook entries alongside
+    // the new ones.
+    const base = adapter.hasOurHooks(existing)
+      ? adapter.stripHooks(existing)
+      : existing;
+    const merged = adapter.mergeHooks(base, hookUrl, "", portFilePath);
     await fs.promises.mkdir(path.dirname(fsPath), { recursive: true });
     await fs.promises.writeFile(fsPath, writeConfigJson(merged), "utf8");
   }
@@ -1514,6 +1593,13 @@ export function activate(context: vscode.ExtensionContext) {
   // in this repo. Silent housekeeping — never blocks activation.
   lifecycleCtx.migrateWorkspaceHooks().catch(() => {
     // migration failures are non-fatal
+  });
+
+  // Bring already-installed hooks up to the current schema, with no prompt —
+  // so a version bump (new events, new URL-resolution strategy) reaches
+  // existing users automatically. Non-fatal, never blocks activation.
+  lifecycleCtx.autoUpgradeHooks().catch(() => {
+    // upgrade failures are non-fatal
   });
 
   context.subscriptions.push(

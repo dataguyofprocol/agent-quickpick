@@ -33,6 +33,8 @@ import {
   mergeCommandHooks,
   stripCommandHooks,
   hasCommandHooks,
+  hasCurrentCommandHooks,
+  HOOK_SCHEMA_VERSION,
 } from "../../lifecycle";
 import {
   CLAUDE_ADAPTER,
@@ -47,6 +49,7 @@ import {
 
 const HOOK_URL = "http://127.0.0.1:99999";
 const SESSION = "Claude";
+const PORT_FILE_PATH = "/home/user/.config/agent-quickpick/hook-server.json";
 
 // ---------------------------------------------------------------------------
 // JSON config helpers
@@ -106,7 +109,7 @@ function assertInstallRemoveSymmetry(
   initial: unknown,
   label: string
 ): void {
-  const installed = adapter.mergeHooks(initial, HOOK_URL, SESSION);
+  const installed = adapter.mergeHooks(initial, HOOK_URL, SESSION, PORT_FILE_PATH);
   assert.ok(
     adapter.hasOurHooks(installed),
     `${label}: hooks should be present after install`
@@ -148,8 +151,8 @@ suite("command-hook adapter symmetry (Claude)", () => {
   });
 
   test("install is idempotent (merge twice === merge once)", () => {
-    const once = adapter.mergeHooks({}, HOOK_URL, SESSION);
-    const twice = adapter.mergeHooks(once, HOOK_URL, SESSION);
+    const once = adapter.mergeHooks({}, HOOK_URL, SESSION, PORT_FILE_PATH);
+    const twice = adapter.mergeHooks(once, HOOK_URL, SESSION, PORT_FILE_PATH);
     assert.deepStrictEqual(
       JSON.parse(JSON.stringify(twice)),
       JSON.parse(JSON.stringify(once))
@@ -157,7 +160,7 @@ suite("command-hook adapter symmetry (Claude)", () => {
   });
 
   test("remove is idempotent (strip twice === strip once)", () => {
-    const installed = adapter.mergeHooks({}, HOOK_URL, SESSION);
+    const installed = adapter.mergeHooks({}, HOOK_URL, SESSION, PORT_FILE_PATH);
     const once = adapter.stripHooks(installed);
     const twice = adapter.stripHooks(once);
     assert.deepStrictEqual(
@@ -180,7 +183,7 @@ suite("command-hook adapter symmetry (Claude)", () => {
     const config = {
       hooks: { Stop: [{ hooks: [{ type: "command", command: userCmd }] }] },
     };
-    const installed = adapter.mergeHooks(config, HOOK_URL, SESSION);
+    const installed = adapter.mergeHooks(config, HOOK_URL, SESSION, PORT_FILE_PATH);
     const removed = adapter.stripHooks(installed);
     const removedHooks = (removed as Record<string, Record<string, unknown[]>>).hooks;
     // The user's Stop hook must still be there.
@@ -194,7 +197,7 @@ suite("command-hook adapter symmetry (Claude)", () => {
   });
 
   test("hasOurHooks detects marker regardless of surrounding edits", () => {
-    const installed = adapter.mergeHooks({}, HOOK_URL, SESSION) as Record<string, unknown>;
+    const installed = adapter.mergeHooks({}, HOOK_URL, SESSION, PORT_FILE_PATH) as Record<string, unknown>;
     // Simulate the user adding unrelated keys/reordering.
     const edited = { ...installed, customField: "added by user" };
     assert.ok(adapter.hasOurHooks(edited));
@@ -224,8 +227,8 @@ suite("command-hook adapter symmetry (Droid)", () => {
   });
 
   test("install is idempotent", () => {
-    const once = adapter.mergeHooks({}, HOOK_URL, SESSION);
-    const twice = adapter.mergeHooks(once, HOOK_URL, SESSION);
+    const once = adapter.mergeHooks({}, HOOK_URL, SESSION, PORT_FILE_PATH);
+    const twice = adapter.mergeHooks(once, HOOK_URL, SESSION, PORT_FILE_PATH);
     assert.deepStrictEqual(
       JSON.parse(JSON.stringify(twice)),
       JSON.parse(JSON.stringify(once))
@@ -235,7 +238,7 @@ suite("command-hook adapter symmetry (Droid)", () => {
 
 suite("command-hook merge produces correct schema", () => {
   test("Claude merge adds Stop + Notification + UserPromptSubmit hooks", () => {
-    const result = CLAUDE_ADAPTER.mergeHooks({}, HOOK_URL, SESSION) as Record<
+    const result = CLAUDE_ADAPTER.mergeHooks({}, HOOK_URL, SESSION, PORT_FILE_PATH) as Record<
       string,
       Record<string, unknown[]>
     >;
@@ -252,7 +255,7 @@ suite("command-hook merge produces correct schema", () => {
   });
 
   test("generated command references the marker", () => {
-    const result = CLAUDE_ADAPTER.mergeHooks({}, HOOK_URL, SESSION);
+    const result = CLAUDE_ADAPTER.mergeHooks({}, HOOK_URL, SESSION, PORT_FILE_PATH);
     assert.ok(
       JSON.stringify(result).includes("agentQuickpick:claude"),
       "command should contain the marker"
@@ -266,27 +269,27 @@ suite("command-hook merge produces correct schema", () => {
 
 suite("buildNodeHookCommand", () => {
   test("produces a non-empty string", () => {
-    const cmd = buildNodeHookCommand(HOOK_URL, SESSION, "agentQuickpick:test", "finished");
+    const cmd = buildNodeHookCommand(HOOK_URL, SESSION, "agentQuickpick:test", "finished", PORT_FILE_PATH);
     assert.ok(typeof cmd === "string" && cmd.length > 0);
   });
 
   test("starts with node -e", () => {
-    const cmd = buildNodeHookCommand(HOOK_URL, SESSION, "agentQuickpick:test", "finished");
+    const cmd = buildNodeHookCommand(HOOK_URL, SESSION, "agentQuickpick:test", "finished", PORT_FILE_PATH);
     assert.ok(cmd.startsWith("node -e"), `should start with "node -e", got: ${cmd.slice(0, 20)}`);
   });
 
   test("contains the hook URL", () => {
-    const cmd = buildNodeHookCommand(HOOK_URL, SESSION, "agentQuickpick:test", "finished");
+    const cmd = buildNodeHookCommand(HOOK_URL, SESSION, "agentQuickpick:test", "finished", PORT_FILE_PATH);
     assert.ok(cmd.includes("127.0.0.1"), "should contain the server host");
   });
 
   test("contains the marker", () => {
-    const cmd = buildNodeHookCommand(HOOK_URL, SESSION, "agentQuickpick:test", "finished");
+    const cmd = buildNodeHookCommand(HOOK_URL, SESSION, "agentQuickpick:test", "finished", PORT_FILE_PATH);
     assert.ok(cmd.includes("agentQuickpick:test"), "should contain the marker");
   });
 
   test("is embeddable as a JSON string value (parses without error)", () => {
-    const cmd = buildNodeHookCommand(HOOK_URL, SESSION, "agentQuickpick:test", "finished");
+    const cmd = buildNodeHookCommand(HOOK_URL, SESSION, "agentQuickpick:test", "finished", PORT_FILE_PATH);
     // Wrap it in a JSON object to simulate being inside settings.json.
     const wrapped = JSON.stringify({ command: cmd });
     assert.doesNotThrow(() => JSON.parse(wrapped));
@@ -297,16 +300,95 @@ suite("buildNodeHookCommand", () => {
     // includes a `cwd` field) and must include it in the POST body so the
     // extension can attribute the session to a workspace folder. We verify
     // the source references j.cwd and a `cwd:` field in the stringified body.
-    const cmd = buildNodeHookCommand(HOOK_URL, SESSION, "agentQuickpick:test", "finished");
+    const cmd = buildNodeHookCommand(HOOK_URL, SESSION, "agentQuickpick:test", "finished", PORT_FILE_PATH);
     assert.ok(cmd.includes("j?.cwd"), "should read j.cwd defensively");
     assert.ok(cmd.includes("cwd:"), "should include a cwd field in the POST body");
   });
 
   test("cwd defaults to empty string when stdin has no cwd", () => {
-    const cmd = buildNodeHookCommand(HOOK_URL, SESSION, "agentQuickpick:test", "finished");
+    const cmd = buildNodeHookCommand(HOOK_URL, SESSION, "agentQuickpick:test", "finished", PORT_FILE_PATH);
     assert.ok(
       cmd.includes("j?.cwd||''"),
       "should default to '' when stdin JSON has no cwd"
+    );
+  });
+
+  test("embeds the version tag alongside the marker", () => {
+    const cmd = buildNodeHookCommand(HOOK_URL, SESSION, "agentQuickpick:test", "finished", PORT_FILE_PATH);
+    assert.ok(
+      cmd.includes(`agentQuickpick:test:v${HOOK_SCHEMA_VERSION}`),
+      "should embed <marker>:v<schema version>"
+    );
+  });
+
+  test("embeds the port file path and reads it before falling back", () => {
+    const cmd = buildNodeHookCommand(HOOK_URL, SESSION, "agentQuickpick:test", "finished", PORT_FILE_PATH);
+    assert.ok(cmd.includes(PORT_FILE_PATH), "should embed the port file path");
+    assert.ok(
+      cmd.includes("readFileSync"),
+      "should read the port file at invocation time"
+    );
+    // Resolution order in the generated source: port file → AQP_HOOK_URL env → baked literal.
+    const fileIdx = cmd.indexOf("fileUrl||process.env.AQP_HOOK_URL");
+    assert.ok(fileIdx !== -1, "file-then-env fallback chain should be present");
+  });
+
+  test("a bad/missing port file never throws (wrapped in try/catch)", () => {
+    const cmd = buildNodeHookCommand(HOOK_URL, SESSION, "agentQuickpick:test", "finished", PORT_FILE_PATH);
+    assert.ok(
+      /try\{fileUrl=JSON\.parse\(fs\.readFileSync\([^)]*\)\)\.url\}catch/.test(cmd),
+      "port-file read must be wrapped so a missing/corrupt file falls through silently"
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Hook schema versioning (auto-upgrade detection)
+// ---------------------------------------------------------------------------
+
+suite("hasCurrentCommandHooks", () => {
+  const marker = "agentQuickpick:test";
+
+  test("false for a config with none of our hooks", () => {
+    assert.ok(!hasCurrentCommandHooks({}, marker));
+    assert.ok(!hasCurrentCommandHooks({ model: "opus" }, marker));
+  });
+
+  test("true for a config merged by the current schema version", () => {
+    const installed = mergeCommandHooks(
+      {},
+      ["Stop"],
+      HOOK_URL,
+      SESSION,
+      marker,
+      PORT_FILE_PATH
+    );
+    assert.ok(hasCurrentCommandHooks(installed, marker));
+    // hasOurHooks (marker-only) must also still see it as ours.
+    assert.ok(hasCommandHooks(installed, marker));
+  });
+
+  test("false for a stale install written by an older schema version (marker present, no version tag)", () => {
+    // Simulate a pre-versioning install: marker present, but no `:v<N>` tag —
+    // e.g. an older extension's generated command.
+    const stale = {
+      hooks: {
+        Stop: [
+          {
+            hooks: [
+              {
+                type: "command",
+                command: `node -e "if(!process.env.AQP_SESSION){process.exit(0)}${marker}"`,
+              },
+            ],
+          },
+        ],
+      },
+    };
+    assert.ok(hasCommandHooks(stale, marker), "marker-only check still sees it as ours");
+    assert.ok(
+      !hasCurrentCommandHooks(stale, marker),
+      "version check should flag it as stale"
     );
   });
 });
@@ -320,7 +402,7 @@ suite("mergeCommandHooks / stripCommandHooks", () => {
   const marker = "agentQuickpick:test";
 
   test("install → remove round-trip on empty", () => {
-    const installed = mergeCommandHooks({}, events, HOOK_URL, SESSION, marker);
+    const installed = mergeCommandHooks({}, events, HOOK_URL, SESSION, marker, PORT_FILE_PATH);
     assert.ok(hasCommandHooks(installed, marker));
     const removed = stripCommandHooks(installed, marker);
     assert.ok(!hasCommandHooks(removed, marker));
@@ -331,7 +413,7 @@ suite("mergeCommandHooks / stripCommandHooks", () => {
   });
 
   test("prunes empty hooks section after removal", () => {
-    const installed = mergeCommandHooks({}, events, HOOK_URL, SESSION, marker);
+    const installed = mergeCommandHooks({}, events, HOOK_URL, SESSION, marker, PORT_FILE_PATH);
     const removed = stripCommandHooks(installed, marker) as Record<string, unknown>;
     assert.ok(!("hooks" in removed), "empty hooks section should be pruned");
   });
@@ -342,7 +424,7 @@ suite("mergeCommandHooks / stripCommandHooks", () => {
         Stop: [{ hooks: [{ type: "command", command: "user-cmd" }] }],
       },
     };
-    const installed = mergeCommandHooks(userHooks, events, HOOK_URL, SESSION, marker);
+    const installed = mergeCommandHooks(userHooks, events, HOOK_URL, SESSION, marker, PORT_FILE_PATH);
     const removed = stripCommandHooks(installed, marker) as Record<
       string,
       Record<string, { hooks: { command: string }[] }[]>
@@ -377,7 +459,7 @@ suite("OpenCode adapter (plugin-file)", () => {
 
   test("buildSource embeds URL + marker and guards on AQP_SESSION", () => {
     assert.ok(adapter.kind === "plugin-file");
-    const src = adapter.buildSource(HOOK_URL, SESSION);
+    const src = adapter.buildSource(HOOK_URL, SESSION, PORT_FILE_PATH);
     assert.ok(src.includes("127.0.0.1"), "should embed the server URL");
     assert.ok(src.includes("agentQuickpick:opencode"), "should contain the marker");
     assert.ok(src.includes("AQP_SESSION"), "should guard on the injected session env");
@@ -386,12 +468,12 @@ suite("OpenCode adapter (plugin-file)", () => {
 
 suite("buildOpenCodePluginSource", () => {
   test("produces ESM with the marker comment", () => {
-    const src = buildOpenCodePluginSource(HOOK_URL, SESSION);
+    const src = buildOpenCodePluginSource(HOOK_URL, SESSION, PORT_FILE_PATH);
     assert.ok(src.includes("agentQuickpick:opencode"), "should contain marker");
   });
 
   test("exports the plugin factory", () => {
-    const src = buildOpenCodePluginSource(HOOK_URL, SESSION);
+    const src = buildOpenCodePluginSource(HOOK_URL, SESSION, PORT_FILE_PATH);
     assert.ok(
       src.includes("AgentQuickpickLifecyclePlugin"),
       "should export the plugin name"
@@ -399,7 +481,7 @@ suite("buildOpenCodePluginSource", () => {
   });
 
   test("maps lifecycle events to statuses", () => {
-    const src = buildOpenCodePluginSource(HOOK_URL, SESSION);
+    const src = buildOpenCodePluginSource(HOOK_URL, SESSION, PORT_FILE_PATH);
     assert.ok(src.includes("session.idle"), "should handle session.idle");
     assert.ok(src.includes("permission.asked"), "should handle permission.asked");
     assert.ok(src.includes("question.asked"), "should handle question.asked");
@@ -407,12 +489,12 @@ suite("buildOpenCodePluginSource", () => {
   });
 
   test("embeds the hook URL", () => {
-    const src = buildOpenCodePluginSource(HOOK_URL, SESSION);
+    const src = buildOpenCodePluginSource(HOOK_URL, SESSION, PORT_FILE_PATH);
     assert.ok(src.includes("127.0.0.1"), "should embed the server URL");
   });
 
   test("forwards process.cwd() in the POST body for repo attribution", () => {
-    const src = buildOpenCodePluginSource(HOOK_URL, SESSION);
+    const src = buildOpenCodePluginSource(HOOK_URL, SESSION, PORT_FILE_PATH);
     assert.ok(
       src.includes("cwd: process.cwd()"),
       "should include process.cwd() in the POST body so sessions can be repo-scoped"
@@ -875,7 +957,7 @@ suite("mid-turn status wiring (Fix 3)", () => {
   test("Claude adapter wires UserPromptSubmit", () => {
     // The event list is private behind the factory; observe its effect by
     // merging into an empty config and checking the produced hook events.
-    const result = CLAUDE_ADAPTER.mergeHooks({}, HOOK_URL, SESSION) as Record<
+    const result = CLAUDE_ADAPTER.mergeHooks({}, HOOK_URL, SESSION, PORT_FILE_PATH) as Record<
       string,
       Record<string, unknown[]>
     >;
@@ -889,7 +971,7 @@ suite("mid-turn status wiring (Fix 3)", () => {
   });
 
   test("Droid adapter wires UserPromptSubmit", () => {
-    const result = DROID_ADAPTER.mergeHooks({}, HOOK_URL, SESSION) as Record<
+    const result = DROID_ADAPTER.mergeHooks({}, HOOK_URL, SESSION, PORT_FILE_PATH) as Record<
       string,
       Record<string, unknown[]>
     >;
@@ -909,7 +991,7 @@ suite("mid-turn status wiring (Fix 3)", () => {
 
 suite("buildNodeHookCommand socket timeout", () => {
   test("sets a 2s timeout so a dead port can't hang the agent's hook", () => {
-    const cmd = buildNodeHookCommand(HOOK_URL, SESSION, "agentQuickpick:test", "finished");
+    const cmd = buildNodeHookCommand(HOOK_URL, SESSION, "agentQuickpick:test", "finished", PORT_FILE_PATH);
     assert.ok(
       cmd.includes("setTimeout(2000"),
       "hook command should arm a 2s socket timeout"
@@ -985,7 +1067,7 @@ suite("resolveOpenCodeConfigDir (Fix 4)", () => {
 
 suite("OpenCode plugin source uses ESM dynamic import (Fix 4)", () => {
   test("uses dynamic import() not require() for http", () => {
-    const src = buildOpenCodePluginSource(HOOK_URL, SESSION);
+    const src = buildOpenCodePluginSource(HOOK_URL, SESSION, PORT_FILE_PATH);
     assert.ok(
       src.includes('import("node:http")'),
       "plugin should use dynamic import('node:http') for Node-ESM compatibility"
@@ -997,7 +1079,7 @@ suite("OpenCode plugin source uses ESM dynamic import (Fix 4)", () => {
   });
 
   test("arms a 2s socket timeout", () => {
-    const src = buildOpenCodePluginSource(HOOK_URL, SESSION);
+    const src = buildOpenCodePluginSource(HOOK_URL, SESSION, PORT_FILE_PATH);
     assert.ok(src.includes("setTimeout(2000"), "plugin should arm a 2s socket timeout");
   });
 });
