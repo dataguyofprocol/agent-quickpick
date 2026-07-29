@@ -6,6 +6,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.2] — 2026-07-30
+
+### Fixed
+- **A partly-installed hook config now self-heals.** `hasCurrentCommandHooks` checked only whether the version tag appeared *somewhere* in the file, so a config that had lost one event's hook (hand-deleted, or a write interrupted mid-merge) read as current forever while that event stayed dead. The check is now per-event: every wired event must carry a current hook, otherwise the config is treated as stale and re-merged.
+- **Upgrades no longer leave two generations of our hook firing side by side.** `mergeCommandHooks` now drops hooks of ours written by an older schema version before appending the current form, instead of appending beside them. Still idempotent, and a re-merge fills a missing event without duplicating one that's already present.
+- **A user hook sharing an entry with ours is no longer deleted with it.** Install and remove both filter per *hook* rather than per entry, so other commands in the same entry survive, along with the entry's other keys (`matcher`). Entries left holding nothing of ours are dropped rather than left as `{ hooks: [] }` litter.
+- **Hook config writes are atomic.** Settings are written to a unique sibling temp file and renamed over the target, so a crash or a concurrent reader never sees a half-written `~/.claude/settings.json` / `~/.factory/settings.json` — a truncated write there breaks every agent session, not just ours. Falls back to a plain write if the rename fails.
+
+### Tests
+- Coverage for per-event staleness, stale-hook replacement, shared-entry preservation, and partial-install healing.
+- `runTest.ts` now tests against an installed VS Code fork (Trae/Cursor/Windsurf) when present, or `AQP_TEST_VSCODE`, instead of always downloading a 300 MB stable build.
+
 ## [0.7.1] — 2026-07-28
 
 ### Fixed

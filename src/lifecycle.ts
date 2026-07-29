@@ -210,9 +210,11 @@ export interface CommandHookAdapter extends BaseAdapter {
   hasOurHooks(parsedConfig: unknown): boolean;
 
   /**
-   * True iff our hooks are present *and* were written by the current
-   * {@link HOOK_SCHEMA_VERSION}. False (not just "absent") signals
-   * `installHook` should rewrite — see `LifecycleContext.autoUpgradeHooks`.
+   * True iff a hook of ours written by the current {@link HOOK_SCHEMA_VERSION}
+   * is present for **every** event this adapter wires. False (not just "absent")
+   * signals `installHook` should rewrite — see
+   * `LifecycleContext.autoUpgradeHooks`. Per-event, so a config missing one
+   * event's hook self-heals instead of passing as current.
    */
   hasCurrentHooks(parsedConfig: unknown): boolean;
 }
@@ -308,8 +310,71 @@ export const HOOK_ENV = (hookUrl: string, session: string) => ({
 });
 
 /**
- * Merge our command hooks into a Claude/Droid-style config for a given event.
+ * A single hook object inside an entry's `hooks` array:
+ * `{ type: "command", command: "..." }`. Returns the command string when the
+ * value has that shape, else undefined.
+ */
+function hookCommand(hook: unknown): string | undefined {
+  if (!hook || typeof hook !== "object") return undefined;
+  const command = (hook as Record<string, unknown>).command;
+  return typeof command === "string" ? command : undefined;
+}
+
+/** True if this hook object is one of ours (any schema version). */
+function isOurHook(hook: unknown, marker: string): boolean {
+  return hookCommand(hook)?.includes(marker) ?? false;
+}
+
+/** True if this hook object is ours *and* written by the current version. */
+function isCurrentHook(hook: unknown, marker: string): boolean {
+  return hookCommand(hook)?.includes(versionTag(marker)) ?? false;
+}
+
+/**
+ * Filter an event's entry array, rewriting each entry's inner `hooks` array with
+ * `keepHook` and dropping only entries our filtering left empty. Entries that
+ * never contained a hook of ours (and any other keys they carry, e.g. `matcher`)
+ * come through untouched, so a user hook sharing an entry with ours survives —
+ * this is why filtering happens per *hook*, not per entry.
+ */
+function filterEventEntries(
+  entries: readonly unknown[],
+  marker: string,
+  keepHook: (hook: unknown) => boolean
+): unknown[] {
+  const result: unknown[] = [];
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      result.push(entry);
+      continue;
+    }
+    const record = entry as Record<string, unknown>;
+    const hooks = record.hooks;
+    if (!Array.isArray(hooks) || !hooks.some((h) => isOurHook(h, marker))) {
+      result.push(entry); // none of ours here — leave it exactly as-is
+      continue;
+    }
+    const keptHooks = hooks.filter((h) => !isOurHook(h, marker) || keepHook(h));
+    // Only ours were in this entry and all got dropped → drop the entry too, so
+    // we don't leave `{ hooks: [] }` litter behind.
+    if (keptHooks.length === 0) continue;
+    result.push({ ...record, hooks: keptHooks });
+  }
+  return result;
+}
+
+/**
+ * Merge our command hooks into a Claude/Droid-style config for the given events.
  * Schema: `{ hooks: { <Event>: [ { matcher?, hooks: [ { type, command } ] } ] } }`.
+ *
+ * Replaces rather than accumulates: any hook of ours written by an *older*
+ * {@link HOOK_SCHEMA_VERSION} is dropped from the event before the current form
+ * is appended, so upgrading never leaves two generations of our hook firing side
+ * by side. An event that already has the current hook is left untouched, which
+ * makes this idempotent; an event missing it gets it, even when *other* events
+ * are already current (a partial install self-heals).
+ *
+ * User hooks — including one that shares an entry with ours — are preserved.
  *
  * This is used by both the Claude and Droid adapters (identical schema). We keep
  * it here so the merge/strip logic is tested once and shared.
@@ -326,16 +391,23 @@ export function mergeCommandHooks(
   const hooksSection = cloneObject(config.hooks);
 
   for (const event of events) {
-    const arr = Array.isArray(hooksSection[event])
-      ? [...(hooksSection[event] as unknown[])]
+    const existing = Array.isArray(hooksSection[event])
+      ? (hooksSection[event] as unknown[])
       : [];
 
-    // Avoid duplicates: skip if one of our hooks for this event+marker exists.
+    // Drop stale generations of ours; keep current ones (and everything else).
+    const arr = filterEventEntries(existing, marker, (h) =>
+      isCurrentHook(h, marker)
+    );
+
     const already = arr.some(
       (entry) =>
         entry &&
         typeof entry === "object" &&
-        JSON.stringify(entry).includes(marker)
+        Array.isArray((entry as Record<string, unknown>).hooks) &&
+        ((entry as Record<string, unknown>).hooks as unknown[]).some((h) =>
+          isCurrentHook(h, marker)
+        )
     );
     if (!already) {
       // One entry per lifecycle status we care about for this event.
@@ -361,8 +433,10 @@ export function mergeCommandHooks(
 }
 
 /**
- * Strip our command hooks (by marker) from a Claude/Droid-style config.
- * Idempotent. Prunes an empty `hooks` section.
+ * Strip our command hooks (by marker, any schema version) from a Claude/Droid-
+ * style config. Idempotent. Prunes an event left with no entries and an empty
+ * `hooks` section. Leaves user hooks intact even when one shares an entry with
+ * ours — see {@link filterEventEntries}.
  */
 export function stripCommandHooks(
   parsedConfig: unknown,
@@ -375,10 +449,7 @@ export function stripCommandHooks(
     const arr = hooksSection[event];
     if (!Array.isArray(arr)) continue;
 
-    const filtered = arr.filter(
-      (entry) =>
-        !(entry && typeof entry === "object" && JSON.stringify(entry).includes(marker))
-    );
+    const filtered = filterEventEntries(arr, marker, () => false);
     if (filtered.length === 0) {
       delete hooksSection[event];
     } else {
@@ -414,10 +485,32 @@ export function hasCommandHooks(parsedConfig: unknown, marker: string): boolean 
  */
 export function hasCurrentCommandHooks(
   parsedConfig: unknown,
-  marker: string
+  marker: string,
+  events: readonly string[]
 ): boolean {
   if (!parsedConfig || typeof parsedConfig !== "object") return false;
-  return JSON.stringify(parsedConfig).includes(versionTag(marker));
+  const hooksSection = (parsedConfig as Record<string, unknown>).hooks;
+  if (!hooksSection || typeof hooksSection !== "object") return false;
+  const section = hooksSection as Record<string, unknown>;
+
+  // Every wired event must carry a current hook of ours. Checking per-event
+  // (rather than "the version tag appears somewhere in the file") means a
+  // half-installed config — one event hand-deleted, or a write interrupted
+  // mid-merge — is reported stale and re-merged, instead of looking current
+  // forever because one sibling event still has its tag.
+  return events.every((event) => {
+    const arr = section[event];
+    if (!Array.isArray(arr)) return false;
+    return arr.some(
+      (entry) =>
+        entry &&
+        typeof entry === "object" &&
+        Array.isArray((entry as Record<string, unknown>).hooks) &&
+        ((entry as Record<string, unknown>).hooks as unknown[]).some((h) =>
+          isCurrentHook(h, marker)
+        )
+    );
+  });
 }
 
 /**

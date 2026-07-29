@@ -77,7 +77,7 @@ function commandHookAdapter(
     },
 
     hasCurrentHooks(parsedConfig: unknown): boolean {
-      return hasCurrentCommandHooks(parsedConfig, marker);
+      return hasCurrentCommandHooks(parsedConfig, marker, events);
     },
   };
 }

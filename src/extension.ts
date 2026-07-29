@@ -932,6 +932,29 @@ function focusUri(extensionId: string, session: string): string {
   return `${vscode.env.uriScheme}://${extensionId}/focus?session=${encodeURIComponent(session)}`;
 }
 
+/**
+ * Write a file by writing a sibling temp file and renaming it over the target.
+ * The rename is atomic on the same filesystem, so a crash or a concurrent reader
+ * never sees a half-written file — this matters because the targets are the
+ * user's own `~/.claude/settings.json` / `~/.factory/settings.json`, which a
+ * truncated write would break for every agent session, not just ours.
+ *
+ * The temp name is unique per call (pid + counter) so two windows installing at
+ * once can't collide on it. Falls back to a plain write if the rename fails
+ * (e.g. an exotic filesystem), since a best-effort write beats none.
+ */
+let atomicWriteSeq = 0;
+async function writeFileAtomic(fsPath: string, content: string): Promise<void> {
+  const tmpPath = `${fsPath}.aqp-${process.pid}-${atomicWriteSeq++}.tmp`;
+  try {
+    await fs.promises.writeFile(tmpPath, content, "utf8");
+    await fs.promises.rename(tmpPath, fsPath);
+  } catch {
+    await fs.promises.unlink(tmpPath).catch(() => {});
+    await fs.promises.writeFile(fsPath, content, "utf8");
+  }
+}
+
 class LifecycleContext {
   /**
    * Resolves to the bound server URL once the socket is listening. The port
@@ -1348,7 +1371,7 @@ class LifecycleContext {
       // Always regenerated — see buildOpenCodePluginSource's doc comment.
       await fs.promises.mkdir(path.dirname(fsPath), { recursive: true });
       const source = adapter.buildSource(hookUrl, "", portFilePath);
-      await fs.promises.writeFile(fsPath, source, "utf8");
+      await writeFileAtomic(fsPath, source);
       return;
     }
 
@@ -1371,7 +1394,7 @@ class LifecycleContext {
       : existing;
     const merged = adapter.mergeHooks(base, hookUrl, "", portFilePath);
     await fs.promises.mkdir(path.dirname(fsPath), { recursive: true });
-    await fs.promises.writeFile(fsPath, writeConfigJson(merged), "utf8");
+    await writeFileAtomic(fsPath, writeConfigJson(merged));
   }
 
   /**
@@ -1409,7 +1432,7 @@ class LifecycleContext {
           continue;
         }
         const stripped = adapter.stripHooks(parsed);
-        await fs.promises.writeFile(fsPath, writeConfigJson(stripped), "utf8");
+        await writeFileAtomic(fsPath, writeConfigJson(stripped));
         touched.push(this.adapterDisplayPath(adapter));
       }
     }

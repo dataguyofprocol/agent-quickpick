@@ -350,8 +350,8 @@ suite("hasCurrentCommandHooks", () => {
   const marker = "agentQuickpick:test";
 
   test("false for a config with none of our hooks", () => {
-    assert.ok(!hasCurrentCommandHooks({}, marker));
-    assert.ok(!hasCurrentCommandHooks({ model: "opus" }, marker));
+    assert.ok(!hasCurrentCommandHooks({}, marker, ["Stop"]));
+    assert.ok(!hasCurrentCommandHooks({ model: "opus" }, marker, ["Stop"]));
   });
 
   test("true for a config merged by the current schema version", () => {
@@ -363,7 +363,7 @@ suite("hasCurrentCommandHooks", () => {
       marker,
       PORT_FILE_PATH
     );
-    assert.ok(hasCurrentCommandHooks(installed, marker));
+    assert.ok(hasCurrentCommandHooks(installed, marker, ["Stop"]));
     // hasOurHooks (marker-only) must also still see it as ours.
     assert.ok(hasCommandHooks(installed, marker));
   });
@@ -387,9 +387,50 @@ suite("hasCurrentCommandHooks", () => {
     };
     assert.ok(hasCommandHooks(stale, marker), "marker-only check still sees it as ours");
     assert.ok(
-      !hasCurrentCommandHooks(stale, marker),
+      !hasCurrentCommandHooks(stale, marker, ["Stop"]),
       "version check should flag it as stale"
     );
+  });
+
+  test("false when only some wired events have a current hook", () => {
+    // Partial install: Stop got written, Notification didn't (interrupted write,
+    // or the user hand-deleted one). Must read as stale so install re-merges.
+    const partial = mergeCommandHooks(
+      {},
+      ["Stop"],
+      HOOK_URL,
+      SESSION,
+      marker,
+      PORT_FILE_PATH
+    );
+    assert.ok(hasCurrentCommandHooks(partial, marker, ["Stop"]));
+    assert.ok(
+      !hasCurrentCommandHooks(partial, marker, ["Stop", "Notification"]),
+      "a missing event must not pass as current"
+    );
+  });
+
+  test("re-merge fills a missing event without duplicating the present one", () => {
+    const events = ["Stop", "Notification"];
+    const partial = mergeCommandHooks(
+      {},
+      ["Stop"],
+      HOOK_URL,
+      SESSION,
+      marker,
+      PORT_FILE_PATH
+    );
+    const healed = mergeCommandHooks(
+      partial,
+      events,
+      HOOK_URL,
+      SESSION,
+      marker,
+      PORT_FILE_PATH
+    ) as { hooks: Record<string, { hooks: { command: string }[] }[]> };
+    assert.ok(hasCurrentCommandHooks(healed, marker, events));
+    assert.strictEqual(healed.hooks.Stop.length, 1, "Stop must not be duplicated");
+    assert.strictEqual(healed.hooks.Notification.length, 1);
   });
 });
 
@@ -431,6 +472,67 @@ suite("mergeCommandHooks / stripCommandHooks", () => {
     >;
     const stopCmds = removed.hooks.Stop.flatMap((e) => e.hooks.map((h) => h.command));
     assert.ok(stopCmds.includes("user-cmd"), "user command should survive");
+  });
+
+  test("strips a stale hook of ours that shares an entry with a user hook", () => {
+    // Someone (a user, or another tool) put their command in the same entry as
+    // ours. Filtering per-entry would delete their hook too.
+    const shared = {
+      hooks: {
+        Stop: [
+          {
+            matcher: "*",
+            hooks: [
+              { type: "command", command: `node -e "/*${marker}:v1*/old"` },
+              { type: "command", command: "user-cmd" },
+            ],
+          },
+        ],
+      },
+    };
+    const removed = stripCommandHooks(shared, marker) as {
+      hooks: Record<string, { matcher?: string; hooks: { command: string }[] }[]>;
+    };
+    assert.strictEqual(removed.hooks.Stop.length, 1);
+    assert.deepStrictEqual(
+      removed.hooks.Stop[0].hooks.map((h) => h.command),
+      ["user-cmd"]
+    );
+    assert.strictEqual(removed.hooks.Stop[0].matcher, "*", "entry keys preserved");
+    assert.ok(!hasCommandHooks(removed, marker));
+  });
+
+  test("merge replaces a stale hook of ours instead of appending beside it", () => {
+    const stale = {
+      hooks: {
+        Stop: [
+          { hooks: [{ type: "command", command: `node -e "/*${marker}:v1*/old"` }] },
+          { hooks: [{ type: "command", command: "user-cmd" }] },
+        ],
+      },
+    };
+    const merged = mergeCommandHooks(
+      stale,
+      ["Stop"],
+      HOOK_URL,
+      SESSION,
+      marker,
+      PORT_FILE_PATH
+    ) as { hooks: Record<string, { hooks: { command: string }[] }[]> };
+    const cmds = merged.hooks.Stop.flatMap((e) => e.hooks.map((h) => h.command));
+    assert.ok(cmds.includes("user-cmd"), "user hook untouched");
+    assert.strictEqual(
+      cmds.filter((c) => c.includes(marker)).length,
+      1,
+      "exactly one generation of our hook should remain"
+    );
+    assert.ok(!cmds.some((c) => c.includes(`${marker}:v1`)), "stale hook dropped");
+  });
+
+  test("merging twice is idempotent", () => {
+    const once = mergeCommandHooks({}, events, HOOK_URL, SESSION, marker, PORT_FILE_PATH);
+    const twice = mergeCommandHooks(once, events, HOOK_URL, SESSION, marker, PORT_FILE_PATH);
+    assert.deepStrictEqual(twice, once);
   });
 });
 
