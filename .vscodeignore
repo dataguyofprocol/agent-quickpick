@@ -13,3 +13,6 @@ out/test/**
 *.vsix
 .env
 .zcode/**
+.claude/**
+AGENTS.md
+MAINTAINERS.md
