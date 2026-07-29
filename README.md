@@ -19,6 +19,8 @@ Built by a dev for devs who run CLI coding agents in VS Code (or Cursor, Windsur
 - **Icons & theme colors out of the box**: Every agent (Claude, Gemini, Codex, Goose, Aider, etc.) gets a distinct icon and tab color so you can identify active sessions at a glance.
 - **Frecency sorting**: The agents you launch most float to the top automatically. Order syncs across machines via Settings Sync.
 - **Clean & non-intrusive**: Agents not found on your system stay hidden by default so your picker stays clean—click the eye icon in the title bar anytime to reveal them.
+- **Know when an agent needs you**: Lifecycle hooks (installed once per agent) fire native OS notifications, in-editor toasts with a **Show** button, and a sound cue when an agent finishes a task or is waiting for input — even when VS Code is behind another app or on another Space. Works in **every repo**, not just this one.
+- **Live session status at a glance**: The running-sessions picker shows a real-time status badge per agent — `●` working, `⏸` blocked (waiting on you), `✓` done, `✗` failed — so you instantly see which agents are blocked waiting on your input. Double-tap `⌘⇧A` to jump to any of them.
 
 ---
 
@@ -43,9 +45,28 @@ No configuration needed—if the tool is on your `PATH`, Agent Quickpick detects
 
 ## Quick Install
 
-1. Download the latest `.vsix` from [GitHub Actions Artifacts](https://github.com/dataguyofprocol/agent-quickpick/actions).
-2. In VS Code, open Extensions (`⌘ShiftX` / `CtrlShiftX`).
+### Option A — Install from Open VSX (recommended)
+
+The extension is published on the [Open VSX Registry](https://open-vsx.org/extension/dataguyofprocol/agent-quickpick) — the open-source marketplace used by VSCodium, Cursor, Windsurf, Trae, Antigravity, and other VS Code-based editors. From those editors you can install it directly from the Extensions panel.
+
+Vanilla **VS Code** doesn't browse Open VSX natively (it uses Microsoft's Marketplace), but you can install the extension from Open VSX in two ways:
+
+1. **Download the `.vsix`** from the [Open VSX page](https://open-vsx.org/extension/dataguyofprocol/agent-quickpick) (click **Download**).
+2. In VS Code, open Extensions (`⌘⇧X` / `Ctrl+⇧+X`).
 3. Click `⋯` (top right) → **Install from VSIX…** and select the file.
+
+Or, from the command line:
+
+```bash
+code --install-extension <path-to-downloaded-.vsix>
+```
+
+You get automatic update checks by pinning to the [Open VSX listing](https://open-vsx.org/extension/dataguyofprocol/agent-quickpick) in editors that natively use Open VSX (Cursor, Windsurf, VSCodium). Vanilla VS Code will **not** auto-update from Open VSX — you'll need to re-download newer `.vsix` releases as they're published.
+
+### Option B — Grab a build from CI
+
+1. Download the latest `.vsix` from [GitHub Actions Artifacts](https://github.com/dataguyofprocol/agent-quickpick/actions).
+2. Install via **Install from VSIX…** as above.
 
 *(Submitting to the VS Code Marketplace soon!)*
 
