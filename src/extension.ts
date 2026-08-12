@@ -648,9 +648,11 @@ type LauncherItem = vscode.QuickPickItem & { agent?: ResolvedAgent };
 let launcherPick: vscode.QuickPick<LauncherItem> | undefined;
 
 /**
- * Double-tap window for ⌘⇧A / Ctrl+Shift+A: a second press within this
- * interval opens the sessions picker instead of the agent launcher. Matches
- * OS double-click timing. Hardcoded per design (no user setting).
+ * Double-tap window: a second press of the agentQuickpick.open command within
+ * this interval opens the sessions picker instead of the agent launcher.
+ * Matches OS double-click timing. Detection is keyed to the command, not the
+ * physical key, so it follows whatever key the user rebound the command to.
+ * Hardcoded per design (no user setting).
  */
 const OPEN_DOUBLE_TAP_MS = 250;
 let openTapTimer: NodeJS.Timeout | undefined;
@@ -1674,7 +1676,18 @@ export function activate(context: vscode.ExtensionContext) {
           `Removed lifecycle hooks from: ${touched.join(", ")}`
         );
       }
-    })
+    }),
+    // Open VS Code's Keyboard Shortcuts editor pre-filtered to our binding,
+    // so users can rebind agentQuickpick.open to any key/chord. The built-in
+    // command takes the search query as its first positional string arg.
+    // Double-tap and the launcher-swap gesture follow automatically — they're
+    // keyed to the command, not the physical key.
+    vscode.commands.registerCommand("agentQuickpick.openKeybindings", () =>
+      vscode.commands.executeCommand(
+        "workbench.action.openGlobalKeybindings",
+        "agentQuickpick.open"
+      )
+    )
   );
 }
 

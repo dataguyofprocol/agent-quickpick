@@ -128,15 +128,17 @@ One sound for every status — its job is to get your attention; the toast says 
 
 ### Keyboard shortcuts
 
-One binding does both jobs — no second shortcut to remember, and nothing of VS Code's own is shadowed.
+One binding does both jobs — no second shortcut to remember, and nothing of VS Code's own is shadowed. The default is `⌘⇧A` / `Ctrl+Shift+A`.
 
-| Shortcut | Action |
+| Default shortcut | Action |
 | --- | --- |
 | `⌘⇧A` / `Ctrl+Shift+A` | Open the agent launcher |
 | `⌘⇧A` twice (within 250ms) | Open running agent sessions — pick one to focus it |
 | `⌘⇧A` again while the launcher is open | Switch to running agent sessions |
 
 Double-tap with nothing running just re-opens the launcher, so the gesture is never a dead end. `Agent Quickpick: Running Sessions` is also on the status-bar item and in the Command Palette.
+
+**Change the shortcut.** Run **Agent Quickpick: Change Agent Quickpick Shortcut** to jump straight into VS Code's Keyboard Shortcuts editor on this binding (or open it with `⌘K ⌘S` / `Ctrl+K Ctrl+S` and search `agentQuickpick.open`), then assign any key or chord. The double-tap and launcher-swap gestures are tied to the command, not the key, so they work with whatever you bind.
 
 ### Status bar
 

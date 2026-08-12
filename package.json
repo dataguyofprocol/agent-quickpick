@@ -2,7 +2,7 @@
   "name": "agent-quickpick",
   "displayName": "Agent Quickpick",
   "description": "Quick-pick launcher for agent CLI terminals — Claude, Opencode, Claude Proxy, Claude GLM, oh-my-pi, Droid, Command Code, and your own — opened in the editor area with their own icon and tab color.",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "publisher": "dataguyofprocol",
   "license": "MIT",
   "icon": "icons/icon.png",
@@ -185,7 +185,7 @@
         "agentQuickpick.showStatusBar": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Show an **Agent** button in the status bar that opens the quick pick. Disable to keep the status bar uncluttered and rely on the keybinding (`Cmd/Ctrl+Shift+A` to launch; press twice within 250ms for running sessions)."
+          "markdownDescription": "Show an **Agent** button in the status bar that opens the quick pick. Disable to keep the status bar uncluttered and rely on the keybinding (default `Cmd/Ctrl+Shift+A` to launch; press twice within 250ms for running sessions). Rebind it to any key via the **Change Agent Quickpick Shortcut** command or VS Code's Keyboard Shortcuts editor (`Cmd/Ctrl+K Cmd/Ctrl+S`, search `agentQuickpick.open`); the double-tap gesture follows whatever key you bind."
         },
         "agentQuickpick.lifecycleNotifications": {
           "type": "boolean",
@@ -231,6 +231,10 @@
       {
         "command": "agentQuickpick.removeHooks",
         "title": "Remove Lifecycle Hooks"
+      },
+      {
+        "command": "agentQuickpick.openKeybindings",
+        "title": "Change Agent Quickpick Shortcut"
       }
     ],
     "keybindings": [
