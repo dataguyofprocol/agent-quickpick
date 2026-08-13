@@ -26,8 +26,13 @@ import {
   shouldSystemNotify,
   shouldPlaySound,
   systemNotifyCommand,
+  notifierCandidates,
   soundPlayCommand,
   SOUND_FILE_DEFAULT,
+  VENDORED_NOTIFIER_REL,
+  FOCUS_URI_PATH,
+  FOCUS_URI_SESSION_PARAM,
+  sessionFromFocusUri,
 } from "./lifecycle";
 import {
   LIFECYCLE_ADAPTERS,
@@ -875,63 +880,93 @@ function fireAndForget(spec: SpawnSpec | null): void {
 
 /**
  * The bundle identifier of the running editor, for attributing macOS
- * notifications. macOS sets `__CFBundleIdentifier` in the environment of any
- * app launched from its bundle, which covers VS Code, Insiders, VSCodium, and
- * Cursor without hardcoding a list. Falls back to stable VS Code — a wrong id
- * just means `osascript` can't find the app and the banner comes back
- * unattributed, never an error (playback is fire-and-forget).
+ * notifications via `-sender`. macOS sets `__CFBundleIdentifier` in the
+ * environment of any app launched from its bundle, which covers VS Code,
+ * Insiders, VSCodium, Cursor, Windsurf, and Trae without hardcoding a list.
+ *
+ * If `__CFBundleIdentifier` is unset (a sanitized env, or a non-GUI launch) we
+ * only assume VS Code when `vscode.env.uriScheme` agrees — otherwise a fork
+ * would wrongly wear VS Code's icon. With no safe guess we return `undefined`
+ * and `systemNotifyCommand` falls back to `osascript`. Never an error:
+ * notification playback is fire-and-forget.
  */
 function hostBundleId(): string | undefined {
   if (process.platform !== "darwin") {
     return undefined;
   }
-  return process.env.__CFBundleIdentifier || "com.microsoft.VSCode";
+  const id = process.env.__CFBundleIdentifier;
+  if (id) {
+    return id;
+  }
+  // No bundle id from the env. Only guess VS Code when the URI scheme agrees, so
+  // a fork (cursor/trae/windsurf) never wears VS Code's icon by mistake.
+  switch (vscode.env.uriScheme) {
+    case "vscode":
+      return "com.microsoft.VSCode";
+    case "vscode-insiders":
+      return "com.microsoft.VSCodeInsiders";
+    default:
+      return undefined;
+  }
 }
 
 /**
- * Absolute path to `terminal-notifier`, or `undefined` if it isn't installed.
+ * Absolute path to `terminal-notifier`, or `undefined` if none is available.
  *
- * Spawning it by bare name doesn't work: an editor launched from Finder/Dock
- * inherits launchd's PATH (`/usr/bin:/bin:/usr/sbin:/sbin`), which contains
- * neither Homebrew prefix — so the spawn ENOENTs and we silently degrade to the
- * Script Editor banner even though the binary is right there. Probed once per
- * window (an install/uninstall mid-session is not worth a stat per notification).
+ * Prefers a user-installed copy (Homebrew/MacPorts/`$PATH`); falls back to the
+ * universal `.app` bundled with the extension so a fresh install with nothing on
+ * `$PATH` still posts a banner that wears the running editor's icon rather than
+ * Script Editor's. Spawning a bare name doesn't work anyway: an editor launched
+ * from Finder/Dock inherits launchd's PATH (`/usr/bin:/bin:/usr/sbin:/sbin`),
+ * which has neither Homebrew prefix. Probed once per window (an install/uninstall
+ * mid-session is not worth a stat per notification). Off macOS this always
+ * resolves to `undefined` — `terminal-notifier` is darwin-only.
  */
 const notifierPath = (() => {
   let cached: string | null | undefined;
-  return (): string | undefined => {
-    if (cached !== undefined) {
+  let cachedFor: string | undefined;
+  return (extensionPath: string): string | undefined => {
+    if (cached !== undefined && cachedFor === extensionPath) {
       return cached ?? undefined;
     }
-    const candidates = [
-      "/opt/homebrew/bin/terminal-notifier", // Homebrew, Apple silicon
-      "/usr/local/bin/terminal-notifier", // Homebrew, Intel
-      "/opt/local/bin/terminal-notifier", // MacPorts
-      ...(process.env.PATH ?? "")
-        .split(path.delimiter)
-        .filter(Boolean)
-        .map((dir) => path.join(dir, "terminal-notifier")),
-    ];
+    cachedFor = extensionPath;
     cached =
-      candidates.find((p) => {
-        try {
-          return fs.statSync(p).isFile();
-        } catch {
-          return false;
+      notifierCandidates(extensionPath, process.platform, process.env.PATH).find(
+        (p) => {
+          try {
+            return fs.statSync(p).isFile();
+          } catch {
+            return false;
+          }
         }
-      }) ?? null;
+      ) ?? null;
+    // An unpacker can strip the executable bit off the bundled Mach-O; restore it
+    // best-effort so the first notification posts instead of silently ENOEXEC-ing
+    // down to the Script Editor fallback. Only the vendored binary is ours to fix.
+    if (cached !== null && cached.endsWith(VENDORED_NOTIFIER_REL)) {
+      try {
+        fs.chmodSync(cached, 0o755);
+      } catch {
+        // ignore — fire-and-forget spawn still tries, then falls back to osascript
+      }
+    }
     return cached ?? undefined;
   };
 })();
 
 /**
  * The URI that focuses a session's terminal when its OS notification is clicked,
- * handled by the URI handler registered in {@link activate}. Uses
+ * parsed back by the handler via {@link sessionFromFocusUri}. Uses
  * `vscode.env.uriScheme` so it resolves to whichever editor is running (`vscode`,
- * `vscode-insiders`, `cursor`, …) rather than hardcoding stable VS Code.
+ * `vscode-insiders`, `cursor`, …) rather than hardcoding stable VS Code. Opening
+ * this URI on click is also what raises the editor window: LaunchServices
+ * activates the app that registered the scheme.
  */
 function focusUri(extensionId: string, session: string): string {
-  return `${vscode.env.uriScheme}://${extensionId}/focus?session=${encodeURIComponent(session)}`;
+  const q = new URLSearchParams({
+    [FOCUS_URI_SESSION_PARAM]: session,
+  });
+  return `${vscode.env.uriScheme}://${extensionId}${FOCUS_URI_PATH}?${q.toString()}`;
 }
 
 /**
@@ -1185,7 +1220,7 @@ class LifecycleContext {
       fireAndForget(
         systemNotifyCommand(process.platform, "Agent Quickpick", msg.text, {
           bundleId: hostBundleId(),
-          notifierPath: notifierPath(),
+          notifierPath: notifierPath(this.context.extensionPath),
           openUrl: focusUri(this.context.extension.id, session),
         })
       );
@@ -1574,25 +1609,35 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   // Clicking an OS notification opens `<scheme>://<extension-id>/focus?session=…`,
-  // which lands here: raise the window and reveal that agent's terminal. Without
-  // this the click could only activate the editor (or, on a Mac without
-  // terminal-notifier, open Script Editor's folder in Finder). A session whose
-  // terminal is gone falls through to the sessions picker rather than no-op.
+  // which lands here. Opening that URL has already raised the editor window
+  // (LaunchServices activates the app that registered the scheme); this handler
+  // then reveals the specific agent's terminal. The banner is posted with
+  // `-sender <editor bundleId> -open <focusUri>`: `-sender` wears the editor's
+  // icon and `-open` routes the click here so we can focus the particular
+  // session, not just the app. A session whose terminal is gone (closed, or in
+  // another window this host can't see) falls through to the sessions picker
+  // rather than no-op. Wrapped so a malformed URI never throws.
   context.subscriptions.push(
     vscode.window.registerUriHandler({
-      handleUri(uri: vscode.Uri) {
-        if (uri.path !== "/focus") {
-          return;
+      async handleUri(uri: vscode.Uri) {
+        let session: string | null = null;
+        try {
+          session = sessionFromFocusUri(uri.path, uri.query);
+        } catch {
+          // malformed query — fall through to the picker below
         }
-        const session = new URLSearchParams(uri.query).get("session");
-        const terminal = session
-          ? vscode.window.terminals.find((t) => t.name === session)
-          : undefined;
-        if (terminal) {
-          terminal.show();
-        } else {
-          void vscode.commands.executeCommand("agentQuickpick.sessions");
+        if (session) {
+          const terminal = vscode.window.terminals.find(
+            (t) => t.name === session
+          );
+          if (terminal) {
+            // Reveal + focus this agent's terminal. The URI open has already
+            // raised the window; this puts the right terminal on top of it.
+            await terminal.show();
+            return;
+          }
         }
+        void vscode.commands.executeCommand("agentQuickpick.sessions");
       },
     })
   );

@@ -25,6 +25,11 @@ import {
   shouldSystemNotify,
   shouldPlaySound,
   systemNotifyCommand,
+  notifierCandidates,
+  VENDORED_NOTIFIER_REL,
+  sessionFromFocusUri,
+  FOCUS_URI_PATH,
+  FOCUS_URI_SESSION_PARAM,
   isSafeBundleId,
   soundPlayCommand,
   isAnnouncedStatus,
@@ -1265,6 +1270,111 @@ suite("isAnnouncedStatus", () => {
   test("finished/waiting/failed only", () => {
     for (const s of ANNOUNCED) assert.ok(isAnnouncedStatus(s), s);
     for (const s of SILENT) assert.ok(!isAnnouncedStatus(s), s);
+  });
+});
+
+suite("notifierCandidates", () => {
+  const EXT = "/ext";
+
+  test("returns no candidates off macOS (terminal-notifier is darwin-only)", () => {
+    assert.deepStrictEqual(notifierCandidates(EXT, "linux", "/usr/bin"), []);
+    assert.deepStrictEqual(notifierCandidates(EXT, "win32", "C:\\bin"), []);
+  });
+
+  test("prefers well-known installs before the bundled fallback", () => {
+    const c = notifierCandidates(EXT, "darwin", undefined);
+    // A user's own copy always wins, so power users keep their newer build...
+    assert.strictEqual(c[0], "/opt/homebrew/bin/terminal-notifier");
+    assert.strictEqual(c[1], "/usr/local/bin/terminal-notifier");
+    assert.strictEqual(c[2], "/opt/local/bin/terminal-notifier");
+    // ...and the bundled universal .app is the notifier of last resort.
+    assert.strictEqual(
+      c[c.length - 1],
+      path.join(EXT, VENDORED_NOTIFIER_REL)
+    );
+  });
+
+  test("expands $PATH entries between the well-known paths and the bundled fallback", () => {
+    const dirs = ["/usr/local/other/bin", "/home/me/bin"];
+    const c = notifierCandidates(EXT, "darwin", dirs.join(path.delimiter));
+    const fromPath = dirs.map((d) => path.join(d, "terminal-notifier"));
+    for (const p of fromPath) {
+      assert.ok(c.includes(p), `$PATH entry ${p} should be a candidate`);
+    }
+    // Ordering: well-known first, then $PATH, then the bundled binary.
+    const wellKnownEnd = c.indexOf("/opt/local/bin/terminal-notifier");
+    const pathStart = c.indexOf(fromPath[0]);
+    const vendored = c.indexOf(path.join(EXT, VENDORED_NOTIFIER_REL));
+    assert.ok(wellKnownEnd < pathStart, "well-known paths come before $PATH");
+    assert.ok(pathStart < vendored, "$PATH comes before the bundled fallback");
+  });
+
+  test("ignores empty $PATH segments", () => {
+    const pathEnv = ["/opt/x", "", "/opt/y"].join(path.delimiter);
+    const c = notifierCandidates(EXT, "darwin", pathEnv);
+    // An empty segment must not yield a bare relative "terminal-notifier" entry.
+    assert.ok(
+      !c.some((p) => p === "terminal-notifier"),
+      "empty $PATH segment must not produce a bare relative candidate"
+    );
+    assert.ok(c.includes(path.join("/opt/x", "terminal-notifier")));
+    assert.ok(c.includes(path.join("/opt/y", "terminal-notifier")));
+  });
+
+  test("still offers the bundled fallback when nothing is on $PATH", () => {
+    const c = notifierCandidates(EXT, "darwin", undefined);
+    assert.ok(
+      c.includes(path.join(EXT, VENDORED_NOTIFIER_REL)),
+      "bundled notifier is the fresh-install default"
+    );
+  });
+
+  test("the bundled candidate is the inner Mach-O of the vendored .app", () => {
+    assert.strictEqual(
+      VENDORED_NOTIFIER_REL,
+      "resources/notifier/terminal-notifier.app/Contents/MacOS/terminal-notifier"
+    );
+  });
+});
+
+suite("sessionFromFocusUri", () => {
+  test("returns the session for a focus URI", () => {
+    const query = new URLSearchParams({
+      [FOCUS_URI_SESSION_PARAM]: "Claude",
+    }).toString();
+    assert.strictEqual(sessionFromFocusUri(FOCUS_URI_PATH, query), "Claude");
+  });
+
+  test("round-trips a session name with spaces and parens (as focusUri emits)", () => {
+    // focusUri builds the query with URLSearchParams; the click must recover the
+    // exact tab name, e.g. "Codex (2)", so the right terminal is focused.
+    const name = "Codex (2)";
+    const query = new URLSearchParams({
+      [FOCUS_URI_SESSION_PARAM]: name,
+    }).toString();
+    assert.strictEqual(sessionFromFocusUri(FOCUS_URI_PATH, query), name);
+  });
+
+  test("returns null for a non-focus path", () => {
+    const query = new URLSearchParams({
+      [FOCUS_URI_SESSION_PARAM]: "Claude",
+    }).toString();
+    assert.strictEqual(sessionFromFocusUri("/other", query), null);
+    assert.strictEqual(sessionFromFocusUri("focus", query), null);
+  });
+
+  test("returns null when the session param is absent", () => {
+    assert.strictEqual(
+      sessionFromFocusUri(FOCUS_URI_PATH, "foo=bar&baz=qux"),
+      null
+    );
+  });
+
+  test("returns null for an empty session", () => {
+    const query = new URLSearchParams({
+      [FOCUS_URI_SESSION_PARAM]: "",
+    }).toString();
+    assert.strictEqual(sessionFromFocusUri(FOCUS_URI_PATH, query), null);
   });
 });
 

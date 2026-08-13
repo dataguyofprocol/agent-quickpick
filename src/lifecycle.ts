@@ -13,6 +13,7 @@
  */
 
 import * as http from "http";
+import * as path from "path";
 import * as vscode from "vscode";
 
 // ---------------------------------------------------------------------------
@@ -771,22 +772,100 @@ export interface NotifyTarget {
 }
 
 /**
+ * Path to the `terminal-notifier` Mach-O bundled with the extension, relative to
+ * the extension root. macOS requires a bundled `.app` (with a bundle id) to post
+ * an attributed notification — a bare `osascript` is forever Script Editor — so
+ * a universal `terminal-notifier.app` ships under `resources/notifier/` and this
+ * inner binary is the notifier of last resort. Exported so the resolver in
+ * `extension.ts` can recognise a resolved vendored path (to fix its exec bit).
+ */
+export const VENDORED_NOTIFIER_REL =
+  "resources/notifier/terminal-notifier.app/Contents/MacOS/terminal-notifier";
+
+/**
+ * Ordered candidate paths for `terminal-notifier` on macOS. A user's own install
+ * wins first (Homebrew Apple-silicon, Homebrew Intel, MacPorts, then `$PATH`) so
+ * power users keep running their newer build; the extension's bundled universal
+ * `.app` is the final candidate, so a fresh install with nothing on `$PATH` still
+ * gets a banner that wears the running editor's icon (via `-sender`) instead of
+ * Script Editor's. Returns `[]` off macOS — `terminal-notifier` is darwin-only.
+ *
+ * Pure (no `vscode` import) so it can be unit-tested without a host, matching the
+ * convention for the notification-resolution helpers.
+ */
+export function notifierCandidates(
+  extensionPath: string,
+  platform: NodeJS.Platform,
+  pathEnv: string | undefined
+): string[] {
+  if (platform !== "darwin") {
+    return [];
+  }
+  const fromPath = (pathEnv ?? "")
+    .split(path.delimiter)
+    .filter(Boolean)
+    .map((dir) => path.join(dir, "terminal-notifier"));
+  return [
+    "/opt/homebrew/bin/terminal-notifier", // Homebrew, Apple silicon
+    "/usr/local/bin/terminal-notifier", // Homebrew, Intel
+    "/opt/local/bin/terminal-notifier", // MacPorts
+    ...fromPath,
+    path.join(extensionPath, VENDORED_NOTIFIER_REL), // bundled universal fallback
+  ];
+}
+
+/**
+ * Path component of the focus URI handled by `registerUriHandler` in
+ * `extension.ts`. Kept here alongside the parser so the URI contract between the
+ * producer (`focusUri`) and the consumer (the URI handler) lives in one place.
+ */
+export const FOCUS_URI_PATH = "/focus";
+
+/** Query parameter carrying the terminal (session) name a focus URI targets. */
+export const FOCUS_URI_SESSION_PARAM = "session";
+
+/**
+ * Parse a focus URI's path + query into the session (terminal tab name) to
+ * focus, or `null` if it isn't a focus URI or carries no session. Pure (no
+ * `vscode` import) so the click-through contract is unit-tested directly: a
+ * notification carries `focusUri(...)`, and a click must round-trip back to the
+ * exact session that fired it.
+ */
+export function sessionFromFocusUri(
+  path: string,
+  query: string
+): string | null {
+  if (path !== FOCUS_URI_PATH) {
+    return null;
+  }
+  const session = new URLSearchParams(query).get(FOCUS_URI_SESSION_PARAM);
+  return session && session.length > 0 ? session : null;
+}
+
+/**
  * Build the OS-notification command for a platform, or `null` where we have no
  * native channel (then the toast + sound still fire).
  *
  * - **macOS**: `terminal-notifier` when the caller found it, falling back to
- *   `osascript`. A bare `display notification` is attributed to whatever app
- *   *ran* the script — Script Editor, whose grey icon lands on the banner and
- *   whose folder opens in Finder when you click it. `terminal-notifier` fixes
- *   both: `-sender` puts the editor's icon on the banner, and `-open <uri>`
- *   hands the click to our URI handler, which focuses the agent's terminal
- *   (`-activate` is the fallback when there's no URI — it merely raises the
- *   editor). Re-attributing via AppleScript instead (`tell application id ...
- *   to display notification`) is *not* an option: it sends an Apple event, which
- *   triggers a TCC automation-consent prompt and blocks `osascript`
- *   indefinitely until it's answered. The fallback passes title/body through an
- *   `on run argv` wrapper so they are arguments, never spliced into the
- *   AppleScript source.
+ *   `osascript`. The resolver (`notifierCandidates`) prefers a user-installed
+ *   `terminal-notifier` and otherwise uses the universal `.app` bundled with the
+ *   extension, so a fresh install still gets an attributed banner; `osascript`
+ *   is now only a rare last resort (bundle missing or unreadable). A bare
+ *   `display notification` is attributed to whatever app *ran* the script —
+ *   Script Editor, whose grey icon lands on the banner and whose folder opens in
+ *   Finder when you click it. `terminal-notifier` fixes both: `-sender` puts the
+ *   editor's icon on the banner, and `-open <focusUri>` routes the click to our
+ *   URI handler, which focuses that agent's specific terminal. The click is also
+ *   what raises the editor window: opening the `<scheme>://` URL hands it to
+ *   LaunchServices, which activates the editor that registered the scheme — so
+ *   the window always comes forward, then the handler reveals the session.
+ *   (`-activate <bundleId>` is the fallback click action when there's no URI — it
+ *   merely raises the editor.) Re-attributing via AppleScript instead (`tell
+ *   application id ... to display notification`) is *not* an option: it sends an
+ *   Apple event, which triggers a TCC automation-consent prompt and blocks
+ *   `osascript` indefinitely until it's answered. The fallback passes title/body
+ *   through an `on run argv` wrapper so they are arguments, never spliced into
+ *   the AppleScript source.
  * - **Linux**: `notify-send` (argv, nothing to escape).
  * - **Windows**: PowerShell raising a real WinRT toast, reading title/body from
  *   env vars. The AUMID is PowerShell's own registered id — an unregistered

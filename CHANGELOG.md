@@ -6,6 +6,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **macOS notifications now wear the running editor's icon out of the box.** Previously a fresh install without `terminal-notifier` on `$PATH` fell back to `osascript`, which macOS credits to **Script Editor** (grey scroll icon, click opens its folder in Finder). Agent Quickpick now bundles a universal `terminal-notifier.app` (x86_64 + arm64; macOS 10.10 / 11.0+) under `resources/notifier/`, so a properly attributed banner is the default on every Mac. A user-installed copy (Homebrew/MacPorts/`$PATH`) still wins when present. macOS Notification Center shows the icon of the sending app's bundle with no runtime override, so a bundled `.app` is the only way to fix this without asking the user to install anything. Resolution is driven by a new pure, unit-tested helper `notifierCandidates`.
+- **Clicking a notification now reliably raises the editor window and focuses that agent's terminal.** The banner is posted with `-sender <editor bundleId> -open <focusUri>`; opening the `<scheme>://` URL activates the editor (LaunchServices raises the window that registered the scheme), and the URI handler reveals the specific session's terminal. The focus-URI contract (path + `session` query param) is centralized in a pure, unit-tested helper `sessionFromFocusUri` so the producer (`focusUri`) and the click consumer can't drift. The handler is now async and wrapped so a malformed URI or a closed terminal falls through to the sessions picker instead of no-op'ing or throwing.
+- **A fork no longer wears VS Code's icon when its bundle id can't be read.** `hostBundleId` fell back to `com.microsoft.VSCode` whenever `__CFBundleIdentifier` was unset, so a fork (Cursor/Trae/Windsurf) with a sanitized env would show VS Code's icon. It now only assumes VS Code when `vscode.env.uriScheme` agrees (`vscode` / `vscode-insiders`); otherwise it declines to guess and the banner is left to the notifier fallback rather than mis-attributed.
+
 ## [0.7.2] — 2026-07-30
 
 ### Fixed
