@@ -345,6 +345,23 @@ suite("buildNodeHookCommand", () => {
       "port-file read must be wrapped so a missing/corrupt file falls through silently"
     );
   });
+
+  test("escapes single quotes and backslashes in URL, port file path, and session", () => {
+    const cmd = buildNodeHookCommand(
+      "http://127.0.0.1:9999/path?x='\\",
+      "Claude's (\\2)",
+      "agentQuickpick:test",
+      "finished",
+      "/tmp/aqp'\\port.json"
+    );
+    // Extract the JS payload from node -e "<script>" and verify it parses.
+    const script = cmd.slice(9, -1).replace(/\\"/g, '"');
+    assert.doesNotThrow(
+      () => new Function(script),
+      "generated script must be valid JavaScript even with quotes/backslashes in inputs"
+    );
+    assert.ok(cmd.includes("'\\\\'"), "single quote in inputs should be escaped");
+  });
 });
 
 // ---------------------------------------------------------------------------

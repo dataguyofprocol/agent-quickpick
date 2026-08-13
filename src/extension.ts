@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { exec, spawn } from "child_process";
+import { execFile, spawn } from "child_process";
 import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
@@ -412,9 +412,10 @@ export async function isCmdInstalled(cmd: string, launcher?: string): Promise<bo
   if (cached && now - cached.ts < INSTALL_CACHE_TTL_MS) {
     return cached.installed;
   }
-  const checker = process.platform === "win32" ? `where "${binary}"` : `command -v "${binary}"`;
+  const cmdName = process.platform === "win32" ? "where" : "command";
+  const args = process.platform === "win32" ? [binary] : ["-v", binary];
   return new Promise<boolean>((resolve) => {
-    exec(checker, (error) => {
+    execFile(cmdName, args, (error) => {
       const installed = !error;
       installCache.set(binary, { installed, ts: now });
       resolve(installed);
@@ -1025,10 +1026,9 @@ class LifecycleContext {
           await fs.promises.mkdir(path.dirname(this.portFilePath()), {
             recursive: true,
           });
-          await fs.promises.writeFile(
+          await writeFileAtomic(
             this.portFilePath(),
-            JSON.stringify({ url }),
-            "utf8"
+            JSON.stringify({ url })
           );
         } catch {
           // Non-fatal — see comment above.
@@ -1633,8 +1633,12 @@ export function activate(context: vscode.ExtensionContext) {
           if (terminal) {
             // Reveal + focus this agent's terminal. The URI open has already
             // raised the window; this puts the right terminal on top of it.
-            await terminal.show();
-            return;
+            try {
+              await terminal.show();
+              return;
+            } catch {
+              // Terminal was disposed concurrently — fall through to sessions picker.
+            }
           }
         }
         void vscode.commands.executeCommand("agentQuickpick.sessions");

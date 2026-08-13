@@ -288,16 +288,23 @@ export function buildNodeHookCommand(
   status: LifecycleStatus,
   portFilePath: string
 ): string {
-  // Inline-escape for a double-quoted JSON string value.
-  const escapedUrl = hookUrl.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  // Inline-escape for single-quoted JavaScript string literals inside node -e.
+  const escapedUrl = hookUrl
+    .replace(/\\/g, "\\\\")
+    .replace(/'/g, "\\'")
+    .replace(/"/g, '\\"');
   const escapedPortFilePath = portFilePath
     .replace(/\\/g, "\\\\")
+    .replace(/'/g, "\\'")
     .replace(/"/g, '\\"');
+  const escapedSession = session
+    .replace(/\\/g, "\\\\")
+    .replace(/'/g, "\\'");
   // Guard first: this hook is installed globally, so it runs on *every* Stop/
   // Notification for this agent — even sessions we didn't launch. When
   // AQP_SESSION is absent (not one of ours), exit immediately: a no-op, no
   // socket, no dead-port noise.
-  return `node -e "/*${versionTag(marker)}*/if(!process.env.AQP_SESSION){process.exit(0)}const h=require('http'),fs=require('fs');let fileUrl;try{fileUrl=JSON.parse(fs.readFileSync('${escapedPortFilePath}','utf8')).url}catch(e){}const u=fileUrl||process.env.AQP_HOOK_URL||'${escapedUrl}';let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d||'{}');const b=JSON.stringify({marker:'${marker}',session:process.env.AQP_SESSION||'${session}',status:'${status}',agentName:'${marker.split(':')[1]||''}',cwd:j?.cwd||''});const r=h.request(u,{method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(b)}});r.setTimeout(2000,()=>r.destroy());r.on('error',()=>{});r.end(b)}catch(e){}})"`;
+  return `node -e "/*${versionTag(marker)}*/if(!process.env.AQP_SESSION){process.exit(0)}const h=require('http'),fs=require('fs');let fileUrl;try{fileUrl=JSON.parse(fs.readFileSync('${escapedPortFilePath}','utf8')).url}catch(e){}const u=fileUrl||process.env.AQP_HOOK_URL||'${escapedUrl}';let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d||'{}');const b=JSON.stringify({marker:'${marker}',session:process.env.AQP_SESSION||'${escapedSession}',status:'${status}',agentName:'${marker.split(':')[1]||''}',cwd:j?.cwd||''});const r=h.request(u,{method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(b)}});r.setTimeout(2000,()=>r.destroy());r.on('error',()=>{});r.end(b)}catch(e){}})"`;
 }
 
 /**
@@ -832,10 +839,10 @@ export const FOCUS_URI_SESSION_PARAM = "session";
  * exact session that fired it.
  */
 export function sessionFromFocusUri(
-  path: string,
+  uriPath: string,
   query: string
 ): string | null {
-  if (path !== FOCUS_URI_PATH) {
+  if (uriPath !== FOCUS_URI_PATH) {
     return null;
   }
   const session = new URLSearchParams(query).get(FOCUS_URI_SESSION_PARAM);
@@ -1050,7 +1057,9 @@ export function startLifecycleServer(
       body += chunk;
       // Guard against unbounded payloads (hooks are tiny).
       if (body.length > 65536) {
+        res.writeHead(413).end();
         req.destroy();
+        return;
       }
     });
     req.on("end", () => {
