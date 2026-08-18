@@ -197,12 +197,15 @@ const HOOK_URL = ${JSON.stringify(hookUrl)};
 const PORT_FILE_PATH = ${JSON.stringify(portFilePath)};
 const MARKER = ${JSON.stringify(OPENCODE_PLUGIN_MARKER)};
 
-async function post(status) {
+async function post(status, reason) {
   try {
     // Only report for sessions Agent Quickpick launched (env injected).
     const session = process.env.AQP_SESSION;
     if (!session) return;
-    const body = JSON.stringify({ marker: MARKER, session, status, agentName: "OpenCode", cwd: process.cwd() });
+    // 'reason' is undefined for every status except waiting, where it says WHY
+    // the agent is blocked (permission vs question) so the UI can say "wants a
+    // command approved" instead of a generic "blocked".
+    const body = JSON.stringify({ marker: MARKER, session, status, reason, agentName: "OpenCode", cwd: process.cwd() });
     // Resolution order: the port file (rewritten with the current port on
     // every extension activation) → the frozen per-terminal env var (stale
     // after a restart) → the URL baked in at install time. Checking the file
@@ -245,8 +248,10 @@ export const AgentQuickpickLifecyclePlugin = async () => ({
         post("finished");
         break;
       case "permission.asked":
+        post("waiting", "permission");
+        break;
       case "question.asked":
-        post("waiting");
+        post("waiting", "question");
         break;
       case "session.error":
         post("failed");

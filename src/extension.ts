@@ -20,9 +20,12 @@ import {
   STATUS_GLYPH,
   shouldNotify,
   notificationMessage,
+  classifyWaitingMessage,
+  waitingLabel,
   HOOK_ENV,
   type SystemNotifyMode,
   type SpawnSpec,
+  type WaitingReason,
   shouldSystemNotify,
   shouldPlaySound,
   systemNotifyCommand,
@@ -718,10 +721,16 @@ async function runSessions(context: vscode.ExtensionContext): Promise<void> {
   const items: Item[] = [...sessions]
     .sort((a, b) => order[statusOf(a)] - order[statusOf(b)])
     .map((t) => {
-      const status = statusOf(t);
+      const state = lifecycleCtx?.getSessionState(t.name);
+      const status = state?.status ?? "running";
+      // Reason-aware wait label, so the picker says "⏸ wants a command approved"
+      // instead of a generic "⏸ blocked" when the agent is blocked on an approval.
+      const label = status === "waiting"
+        ? waitingLabel(state?.waitingReason)
+        : STATUS_LABEL[status];
       return {
         label: t.name,
-        description: `${STATUS_GLYPH[status]} ${STATUS_LABEL[status]}`,
+        description: `${STATUS_GLYPH[status]} ${label}`,
         iconPath: iconOf(t),
         terminal: t,
       };
@@ -1157,14 +1166,24 @@ class LifecycleContext {
      // (accounts for `cd` inside the agent). Empty/absent cwd is ignored so we
      // never clobber an existing value with nothing.
      const cwd = typeof payload.cwd === "string" && payload.cwd !== "" ? payload.cwd : prev.cwd;
+     // Why the agent is waiting, when the payload can tell: OpenCode sends a
+     // typed reason; Claude only a free-text message we classify. A typed
+     // reason always wins; the classifier is the fallback. Only meaningful
+     // while waiting — cleared on every other transition so a stale reason
+     // can't outlive its wait.
+     const waitingReason: WaitingReason | undefined =
+       status === "waiting"
+         ? payload.reason ?? classifyWaitingMessage(payload.message)
+         : undefined;
      this.sessions.set(payload.session, {
        ...prev,
        status,
        changedAt: Date.now(),
        ...(cwd ? { cwd } : {}),
+       waitingReason,
      });
      this.refreshStatusBar();
-     this.maybeNotify(payload.session, status);
+     this.maybeNotify(payload.session, status, undefined, waitingReason);
    }
 
   /**
@@ -1177,7 +1196,7 @@ class LifecycleContext {
    * legitimately produce a sound + OS notification and no toast (VS Code in the
    * background), or a toast + sound and no OS notification (window focused).
    */
-  private maybeNotify(session: string, status: LifecycleStatus, exitCode?: number): void {
+  private maybeNotify(session: string, status: LifecycleStatus, exitCode?: number, waitingReason?: WaitingReason): void {
     const config = vscode.workspace.getConfiguration("agentQuickpick");
     const settingOn = config.get<boolean>("lifecycleNotifications", true);
     const systemMode = config.get<SystemNotifyMode>(
@@ -1192,7 +1211,7 @@ class LifecycleContext {
     const sessionState = this.sessions.get(session);
     const agentName = sessionState?.agentName ?? session;
     const repo = vscode.workspace.workspaceFolders?.[0]?.name;
-    const msg = notificationMessage(agentName, status, repo, exitCode);
+    const msg = notificationMessage(agentName, status, repo, exitCode, waitingReason);
     if (!msg) {
       return;
     }

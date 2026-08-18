@@ -51,6 +51,20 @@ export const STATUS_GLYPH: Record<LifecycleStatus, string> = {
   unknown: "○",
 };
 
+/**
+ * Why an agent is {@link LifecycleStatus.waiting}, when the source can tell.
+ * Absent (`undefined`) = a plain "needs your input" wait with no known cause.
+ *
+ * - `"permission"` — the agent wants to run something (a command/tool) and is
+ *   asking you to approve it. Claude reports this as free text in the
+ *   Notification hook's stdin `message` ("…needs your permission to use Bash");
+ *   OpenCode as the typed event `permission.asked`.
+ * - `"question"` — the agent asked a question and needs your answer.
+ *   OpenCode-only (`question.asked`); Claude's Notification hook does not
+ *   distinguish this from a plain idle wait.
+ */
+export type WaitingReason = "permission" | "question";
+
 export interface SessionState {
   /** Terminal tab name, e.g. "Claude" or "Codex (2)". */
   name: string;
@@ -80,6 +94,13 @@ export interface SessionState {
    * to {@link launchedInFolder} when absent.
    */
   cwd?: string;
+  /**
+   * Why the agent is waiting, when the last waiting payload could tell
+   * (see {@link WaitingReason}). Only meaningful while `status === "waiting"`;
+   * cleared on any other transition so a stale reason can never outlive its
+   * wait.
+   */
+  waitingReason?: WaitingReason;
 }
 
 /**
@@ -100,6 +121,22 @@ export interface HookPayload {
    * status-bar filtering. Absent for adapters/sources that don't supply it.
    */
   cwd?: string;
+  /**
+   * Why the agent is waiting, when the source knows. OpenCode sends the typed
+   * {@link WaitingReason} directly (`permission.asked` → `"permission"`,
+   * `question.asked` → `"question"`); Claude sends only the free-text
+   * `message`, classified via {@link classifyWaitingMessage}. Droid sends
+   * neither — its wait stays generic.
+   */
+  reason?: WaitingReason;
+  /**
+   * Free-text notification message from the agent's hook stdin (Claude's
+   * Notification event carries e.g. "Claude needs your permission to use
+   * Bash" / "Claude is waiting for your input"). Classified into a
+   * {@link WaitingReason} rather than shown verbatim — it's a stable English
+   * contract, not UI copy.
+   */
+  message?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -256,7 +293,7 @@ export type LifecycleAdapter = CommandHookAdapter | PluginFileAdapter;
  * (extension.ts), which silently rewrites stale installs on activation so
  * existing users get new hook behavior without reinstalling anything.
  */
-export const HOOK_SCHEMA_VERSION = 2;
+export const HOOK_SCHEMA_VERSION = 3;
 
 /** The version tag embedded alongside a marker; shared by embed + detect sites. */
 function versionTag(marker: string): string {
@@ -304,7 +341,7 @@ export function buildNodeHookCommand(
   // Notification for this agent — even sessions we didn't launch. When
   // AQP_SESSION is absent (not one of ours), exit immediately: a no-op, no
   // socket, no dead-port noise.
-  return `node -e "/*${versionTag(marker)}*/if(!process.env.AQP_SESSION){process.exit(0)}const h=require('http'),fs=require('fs');let fileUrl;try{fileUrl=JSON.parse(fs.readFileSync('${escapedPortFilePath}','utf8')).url}catch(e){}const u=fileUrl||process.env.AQP_HOOK_URL||'${escapedUrl}';let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d||'{}');const b=JSON.stringify({marker:'${marker}',session:process.env.AQP_SESSION||'${escapedSession}',status:'${status}',agentName:'${marker.split(':')[1]||''}',cwd:j?.cwd||''});const r=h.request(u,{method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(b)}});r.setTimeout(2000,()=>r.destroy());r.on('error',()=>{});r.end(b)}catch(e){}})"`;
+  return `node -e "/*${versionTag(marker)}*/if(!process.env.AQP_SESSION){process.exit(0)}const h=require('http'),fs=require('fs');let fileUrl;try{fileUrl=JSON.parse(fs.readFileSync('${escapedPortFilePath}','utf8')).url}catch(e){}const u=fileUrl||process.env.AQP_HOOK_URL||'${escapedUrl}';let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d||'{}');const b=JSON.stringify({marker:'${marker}',session:process.env.AQP_SESSION||'${escapedSession}',status:'${status}',agentName:'${marker.split(':')[1]||''}',cwd:j?.cwd||'',message:j?.message||''});const r=h.request(u,{method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(b)}});r.setTimeout(2000,()=>r.destroy());r.on('error',()=>{});r.end(b)}catch(e){}})"`;
 }
 
 /**
@@ -600,7 +637,9 @@ export function statusBarTooltip(states: SessionState[]): string {
     .map((s) => {
       const folder = folderOf(s);
       const suffix = folder ? ` · ${folderBasename(folder)}` : "";
-      return `${s.name} — ${STATUS_LABEL[s.status]}${suffix}`;
+      const label =
+        s.status === "waiting" ? waitingLabel(s.waitingReason) : STATUS_LABEL[s.status];
+      return `${s.name} — ${label}${suffix}`;
     })
     .join("\n");
 }
@@ -1008,14 +1047,18 @@ export function notificationMessage(
   agentName: string,
   status: LifecycleStatus,
   repo?: string,
-  exitCode?: number
+  exitCode?: number,
+  reason?: WaitingReason
 ): { text: string; action: string } | null {
   const suffix = repo && repo.trim() !== "" ? ` · ${repo.trim()}` : "";
   switch (status) {
     case "finished":
       return { text: `${STATUS_GLYPH.finished} ${agentName} finished${suffix}`, action: "Show" };
     case "waiting":
-      return { text: `${STATUS_GLYPH.waiting} ${agentName} needs your input${suffix}`, action: "Show" };
+      return {
+        text: `${STATUS_GLYPH.waiting} ${waitingHeadline(agentName, reason)}${suffix}`,
+        action: "Show",
+      };
     case "failed": {
       const codeSuffix =
         typeof exitCode === "number" ? `${suffix} · exit ${exitCode}` : suffix;
@@ -1023,6 +1066,55 @@ export function notificationMessage(
     }
     default:
       return null;
+  }
+}
+
+/**
+ * Classify Claude's free-text Notification `message` into a
+ * {@link WaitingReason}. Claude's notification copy is a small stable set of
+ * English strings ("…needs your permission to use Bash", "…is waiting for
+ * your input"), so a conservative keyword match is enough: anything mentioning
+ * permission is a permission ask; everything else — including a missing or
+ * non-string message — is a generic wait.
+ */
+export function classifyWaitingMessage(message: unknown): WaitingReason | undefined {
+  if (typeof message !== "string" || message === "") {
+    return undefined;
+  }
+  return message.toLowerCase().includes("permission") ? "permission" : undefined;
+}
+
+/**
+ * Sentence-form headline for a waiting toast. "wants to run a command —
+ * approve?" instead of "needs your input" when we know the agent is blocked on
+ * a permission ask, "asked a question — needs your answer" when it's waiting
+ * on a reply. Kept separate from the compact picker/tooltip label
+ * ({@link waitingLabel}) so the two surfaces can read naturally without
+ * drifting on the *reason* mapping.
+ */
+export function waitingHeadline(agentName: string, reason?: WaitingReason): string {
+  switch (reason) {
+    case "permission":
+      return `${agentName} wants to run a command — approve?`;
+    case "question":
+      return `${agentName} asked a question — needs your answer`;
+    default:
+      return `${agentName} needs your input`;
+  }
+}
+
+/**
+ * Compact status label (no agent name, no glyph) for the sessions picker and
+ * the status-bar tooltip — reason-aware for waits.
+ */
+export function waitingLabel(reason?: WaitingReason): string {
+  switch (reason) {
+    case "permission":
+      return "wants a command approved";
+    case "question":
+      return "asked a question";
+    default:
+      return STATUS_LABEL.waiting;
   }
 }
 

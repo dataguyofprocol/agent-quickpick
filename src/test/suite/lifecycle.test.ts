@@ -34,6 +34,9 @@ import {
   soundPlayCommand,
   isAnnouncedStatus,
   notificationMessage,
+  classifyWaitingMessage,
+  waitingHeadline,
+  waitingLabel,
   buildNodeHookCommand,
   mergeCommandHooks,
   stripCommandHooks,
@@ -1070,6 +1073,85 @@ suite("notificationMessage", () => {
     const msg = notificationMessage("Claude", "failed");
     assert.ok(msg);
     assert.strictEqual(msg!.text, "✗ Claude crashed");
+  });
+});
+
+suite("waiting reasons — classifier (Claude message text)", () => {
+  test("permission mention → permission", () => {
+    assert.strictEqual(
+      classifyWaitingMessage("Claude needs your permission to use Bash"),
+      "permission"
+    );
+  });
+
+  test("case-insensitive permission match", () => {
+    assert.strictEqual(
+      classifyWaitingMessage("CLAUDE NEEDS YOUR PERMISSION TO USE WebFetch"),
+      "permission"
+    );
+  });
+
+  test("waiting-for-input message → no reason (generic wait)", () => {
+    assert.strictEqual(classifyWaitingMessage("Claude is waiting for your input"), undefined);
+  });
+
+  test("empty / non-string / missing message → no reason", () => {
+    assert.strictEqual(classifyWaitingMessage(""), undefined);
+    assert.strictEqual(classifyWaitingMessage(undefined), undefined);
+    assert.strictEqual(classifyWaitingMessage(42), undefined);
+    assert.strictEqual(classifyWaitingMessage(null), undefined);
+  });
+});
+
+suite("waiting reasons — copy", () => {
+  test("toast headline per reason", () => {
+    assert.strictEqual(
+      waitingHeadline("Claude", "permission"),
+      "Claude wants to run a command — approve?"
+    );
+    assert.strictEqual(
+      waitingHeadline("OpenCode", "question"),
+      "OpenCode asked a question — needs your answer"
+    );
+    assert.strictEqual(waitingHeadline("Droid"), "Droid needs your input");
+  });
+
+  test("compact picker/tooltip label per reason", () => {
+    assert.strictEqual(waitingLabel("permission"), "wants a command approved");
+    assert.strictEqual(waitingLabel("question"), "asked a question");
+    assert.strictEqual(waitingLabel(undefined), "blocked");
+  });
+
+  test("notificationMessage threads the reason into the waiting toast", () => {
+    const msg = notificationMessage("Claude", "waiting", "my-app", undefined, "permission");
+    assert.ok(msg);
+    assert.strictEqual(msg!.text, "⏸ Claude wants to run a command — approve? · my-app");
+  });
+
+  test("notificationMessage waiting without a reason keeps the generic copy", () => {
+    const msg = notificationMessage("Droid", "waiting", "my-app");
+    assert.ok(msg);
+    assert.strictEqual(msg!.text, "⏸ Droid needs your input · my-app");
+  });
+
+  test("reason is ignored for non-waiting statuses", () => {
+    const msg = notificationMessage("Claude", "finished", "my-app", undefined, "permission");
+    assert.ok(msg);
+    assert.strictEqual(msg!.text, "✓ Claude finished · my-app");
+  });
+});
+
+suite("waiting reasons — hook plumbing", () => {
+  test("buildNodeHookCommand forwards the stdin message", () => {
+    const cmd = buildNodeHookCommand(HOOK_URL, SESSION, "agentQuickpick:claude", "waiting", PORT_FILE_PATH);
+    assert.ok(cmd.includes("message:j?.message||''"), "hook POST body should carry the stdin message");
+  });
+
+  test("OpenCode plugin posts typed reasons for the two ask events", () => {
+    const src = buildOpenCodePluginSource(HOOK_URL, SESSION, PORT_FILE_PATH);
+    assert.ok(src.includes('post("waiting", "permission")'), "permission.asked → waiting/permission");
+    assert.ok(src.includes('post("waiting", "question")'), "question.asked → waiting/question");
+    assert.ok(src.includes("status, reason,"), "POST body should include the reason field");
   });
 });
 

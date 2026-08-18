@@ -4,7 +4,10 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.9.0] — 2026-08-18
+
+### Added
+- **Waiting toasts now say *why* the agent needs you.** Instead of a generic "Claude needs your input", a permission ask reads "⏸ Claude wants to run a command — approve?" and an OpenCode question reads "⏸ OpenCode asked a question — needs your answer". The same reason-aware wording shows in the sessions picker and the status-bar tooltip ("wants a command approved" / "asked a question"). Sources: OpenCode's typed `permission.asked` / `question.asked` events (previously collapsed into one generic "blocked"), and Claude's Notification-hook `message` (previously discarded by the hook command — now forwarded and classified by a conservative keyword match). Droid shares Claude's hook schema but its stdin carries no message, so its waits stay generic. New pure, unit-tested helpers: `classifyWaitingMessage`, `waitingHeadline`, `waitingLabel`.
 
 ### Fixed
 - **macOS notifications now wear the running editor's icon out of the box.** Previously a fresh install without `terminal-notifier` on `$PATH` fell back to `osascript`, which macOS credits to **Script Editor** (grey scroll icon, click opens its folder in Finder). Agent Quickpick now bundles a universal `terminal-notifier.app` (x86_64 + arm64; macOS 10.10 / 11.0+) under `resources/notifier/`, so a properly attributed banner is the default on every Mac. A user-installed copy (Homebrew/MacPorts/`$PATH`) still wins when present. macOS Notification Center shows the icon of the sending app's bundle with no runtime override, so a bundled `.app` is the only way to fix this without asking the user to install anything. Resolution is driven by a new pure, unit-tested helper `notifierCandidates`.
