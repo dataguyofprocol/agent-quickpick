@@ -14,5 +14,6 @@ out/test/**
 .env
 .zcode/**
 .claude/**
+.mimosa/**
 AGENTS.md
 MAINTAINERS.md
