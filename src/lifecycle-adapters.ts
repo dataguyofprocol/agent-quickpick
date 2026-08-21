@@ -148,18 +148,37 @@ const OPENCODE_PLUGIN_FILE = "plugin/agent-quickpick-lifecycle.js";
  *
  * The extension joins the result with {@link OPENCODE_ADAPTER.pluginPath}.
  */
+export function isAbsoluteForPlatform(fsPath: string, platform: string): boolean {
+  if (platform === "win32") {
+    return /^[A-Za-z]:[\\/]/.test(fsPath);
+  }
+  return fsPath.startsWith("/");
+}
+
 export function resolveOpenCodeConfigDir(
   env: NodeJS.ProcessEnv,
   platform: string,
   homedir: string
 ): string {
-  if (env.OPENCODE_CONFIG_DIR) return env.OPENCODE_CONFIG_DIR;
-  if (env.XDG_CONFIG_HOME) return path.join(env.XDG_CONFIG_HOME, "opencode");
+  // Resolve explicit overrides as absolute paths on the target platform.
+  // Relative values are anchored to the user's home directory so a value like
+  // "../../etc" cannot escape via the current working directory.
+  if (env.OPENCODE_CONFIG_DIR) {
+    return isAbsoluteForPlatform(env.OPENCODE_CONFIG_DIR, platform)
+      ? path.normalize(env.OPENCODE_CONFIG_DIR)
+      : path.resolve(homedir, env.OPENCODE_CONFIG_DIR);
+  }
+  if (env.XDG_CONFIG_HOME) {
+    const base = isAbsoluteForPlatform(env.XDG_CONFIG_HOME, platform)
+      ? env.XDG_CONFIG_HOME
+      : path.join(homedir, env.XDG_CONFIG_HOME);
+    return path.join(base, "opencode");
+  }
   if (platform === "win32") {
     const root = env.APPDATA ?? env.LOCALAPPDATA ?? homedir;
     return path.join(root, "opencode");
   }
-  return path.join(homedir, ".config", "opencode");
+  return path.resolve(path.join(homedir, ".config", "opencode"));
 }
 
 /**

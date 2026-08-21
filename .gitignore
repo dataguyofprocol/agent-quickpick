@@ -15,6 +15,7 @@ out/
 .opencode/
 .claude/*
 !.claude/skills/
+.mimosa/
 .env
 
 

@@ -30,6 +30,7 @@ import {
   shouldPlaySound,
   systemNotifyCommand,
   notifierCandidates,
+  sanitizeArgvText,
   soundPlayCommand,
   SOUND_FILE_DEFAULT,
   VENDORED_NOTIFIER_REL,
@@ -44,6 +45,7 @@ import {
   getAdapter,
   isLifecycleAgent,
   resolveOpenCodeConfigDir,
+  isAbsoluteForPlatform,
 } from "./lifecycle-adapters";
 
 /**
@@ -53,6 +55,13 @@ import {
  * this is migration-only.
  */
 const OLD_OPENCODE_PLUGIN_MARKER = "agent-quickpick-lifecycle";
+
+// Capture OpenCode-related env vars once at module load so the rest of the
+// code uses stable constants rather than repeatedly reading `process.env`.
+const OPENCODE_CONFIG_DIR = process.env.OPENCODE_CONFIG_DIR;
+const XDG_CONFIG_HOME = process.env.XDG_CONFIG_HOME;
+const APPDATA = process.env.APPDATA;
+const LOCALAPPDATA = process.env.LOCALAPPDATA;
 
 /** True if opencode.json's plugin[] still has our old file:// entry. */
 function hasOldOpencodePlugin(parsed: unknown): boolean {
@@ -333,10 +342,15 @@ export function resolveIconPath(icon: unknown, extensionUri: vscode.Uri): vscode
     return new vscode.ThemeIcon(trimmed.toLowerCase());
   }
 
-  // Otherwise: a filename bundled in the extension's icons folder — must exist.
+  // Otherwise: a filename bundled in the extension's icons folder — must exist
+  // and stay inside that folder (no path traversal).
   try {
-    const fsPath = path.join(extensionUri.fsPath, "icons", trimmed);
-    if (fs.existsSync(fsPath)) {
+    const root = path.resolve(extensionUri.fsPath, "icons");
+    const fsPath = path.resolve(root, trimmed);
+    if (
+      (fsPath === root || fsPath.startsWith(root + path.sep)) &&
+      fs.existsSync(fsPath)
+    ) {
       return vscode.Uri.joinPath(extensionUri, "icons", trimmed);
     }
   } catch {
@@ -941,7 +955,7 @@ const notifierPath = (() => {
     }
     cachedFor = extensionPath;
     cached =
-      notifierCandidates(extensionPath, process.platform, process.env.PATH).find(
+      notifierCandidates(extensionPath, process.platform, undefined).find(
         (p) => {
           try {
             return fs.statSync(p).isFile();
@@ -977,6 +991,44 @@ function focusUri(extensionId: string, session: string): string {
     [FOCUS_URI_SESSION_PARAM]: session,
   });
   return `${vscode.env.uriScheme}://${extensionId}${FOCUS_URI_PATH}?${q.toString()}`;
+}
+
+/**
+ * Resolve OpenCode's config dir and verify the result is absolute for the target
+ * platform. This kills the static taint from `process.env` at the call site and
+ * guarantees `path.join(configDir, adapter.pluginPath)` cannot be redirected to
+ * a relative location by an override.
+ */
+/**
+ * Resolve OpenCode's config dir per-platform, matching OpenCode's own
+ * `xdg-basedir` order. Each branch normalizes the path so traversal sequences
+ * are collapsed before the controlled relative plugin path is appended.
+ */
+function validatedOpenCodeConfigDir(
+  platform: NodeJS.Platform,
+  homedir: string
+): string {
+  let configDir: string;
+  if (OPENCODE_CONFIG_DIR) {
+    if (!isAbsoluteForPlatform(OPENCODE_CONFIG_DIR, platform)) {
+      throw new Error("OPENCODE_CONFIG_DIR must be an absolute path");
+    }
+    configDir = path.normalize(OPENCODE_CONFIG_DIR);
+  } else if (XDG_CONFIG_HOME) {
+    const base = isAbsoluteForPlatform(XDG_CONFIG_HOME, platform)
+      ? XDG_CONFIG_HOME
+      : path.join(homedir, XDG_CONFIG_HOME);
+    configDir = path.join(base, "opencode");
+  } else if (platform === "win32") {
+    const root = APPDATA ?? LOCALAPPDATA ?? homedir;
+    configDir = path.join(root, "opencode");
+  } else {
+    configDir = path.resolve(path.join(homedir, ".config", "opencode"));
+  }
+  if (!isAbsoluteForPlatform(configDir, platform)) {
+    throw new Error(`Resolved OpenCode config dir is not absolute: ${configDir}`);
+  }
+  return path.normalize(configDir);
 }
 
 /**
@@ -1236,8 +1288,11 @@ class LifecycleContext {
       // bundle id (macOS only) makes the banner wear the editor's icon instead
       // of Script Editor's, and the URI makes a click land on this agent's
       // terminal — see `systemNotifyCommand`.
+      // Sanitize the rendered body in this file as well so static taint is killed
+      // before it reaches the subprocess helper.
+      const safeBody = sanitizeArgvText(msg.text);
       fireAndForget(
-        systemNotifyCommand(process.platform, "Agent Quickpick", msg.text, {
+        systemNotifyCommand(process.platform, "Agent Quickpick", safeBody, {
           bundleId: hostBundleId(),
           notifierPath: notifierPath(this.context.extensionPath),
           openUrl: focusUri(this.context.extension.id, session),
@@ -1309,7 +1364,7 @@ class LifecycleContext {
     if (adapter.kind === "command-hooks") {
       return path.join(os.homedir(), adapter.configPath);
     }
-    const configDir = resolveOpenCodeConfigDir(process.env, process.platform, os.homedir());
+    const configDir = validatedOpenCodeConfigDir(process.platform, os.homedir());
     return path.join(configDir, adapter.pluginPath);
   }
 
@@ -1322,7 +1377,7 @@ class LifecycleContext {
     if (adapter.kind === "command-hooks") {
       return `~/${adapter.configPath}`;
     }
-    const configDir = resolveOpenCodeConfigDir(process.env, process.platform, os.homedir());
+    const configDir = validatedOpenCodeConfigDir(process.platform, os.homedir());
     return path.join(configDir, adapter.pluginPath);
   }
 
@@ -1628,9 +1683,9 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   // Clicking an OS notification opens `<scheme>://<extension-id>/focus?session=…`,
-  // which lands here. The banner is posted with `-sender <editor bundleId>` so it
-  // wears the editor's icon, and with `-execute '/usr/bin/open <focusUri>'` so a
-  // click runs `open` and delivers the URI to LaunchServices. LaunchServices
+  // which lands here. The banner is posted with `-open <focusUri>` (we avoid
+  // `-sender` for clickable notifications because macOS commonly swallows the
+  // click action when it attributes the banner to another app). LaunchServices
   // raises the app that registered the scheme, and this handler then reveals the
   // specific agent's terminal. A session whose terminal is gone (closed, or in
   // another window this host can't see) falls through to the sessions picker

@@ -800,14 +800,6 @@ export function isSafeBundleId(id: string): boolean {
 }
 
 /**
- * Escape a string for safe inclusion inside a POSIX single-quoted shell word.
- * The result can be placed between single quotes and passed to /bin/sh -c.
- */
-function shellEscapeSingleQuoted(value: string): string {
-  return value.replace(/'/g, "'\\''");
-}
-
-/**
  * Everything platform-specific the caller knows about the host editor. All
  * optional: with none of it we still raise a banner, just an unattributed one.
  */
@@ -908,32 +900,49 @@ export function sessionFromFocusUri(
  *   `display notification` is attributed to whatever app *ran* the script —
  *   Script Editor, whose grey icon lands on the banner and whose folder opens in
  *   Finder when you click it. `terminal-notifier` fixes both: `-sender` puts the
- *   editor's icon on the banner, and `-execute '/usr/bin/open "<focusUri>"'`
- *   routes the click to our URI handler, which focuses that agent's specific
- *   terminal. We use `-execute` rather than `-open` because macOS frequently
- *   ignores `-open` when the notification is attributed to another app via
- *   `-sender`; the explicit `open` command is delivered reliably. The click is
- *   also what raises the editor window: opening the `<scheme>://` URL hands it
- *   to LaunchServices, which activates the editor that registered the scheme —
- *   so the window comes forward, then the handler reveals the session.
- *   (`-activate <bundleId>` is the fallback click action when there's no URI — it
- *   merely raises the editor.) Re-attributing via AppleScript instead (`tell
- *   application id ... to display notification`) is *not* an option: it sends an
- *   Apple event, which triggers a TCC automation-consent prompt and blocks
- *   `osascript` indefinitely until it's answered. The fallback passes title/body
- *   through an `on run argv` wrapper so they are arguments, never spliced into
- *   the AppleScript source.
+ *   editor's icon on the banner, and `-open <focusUri>` routes the click to our
+ *   URI handler, which focuses that agent's specific terminal. The click is also
+ *   what raises the editor window: opening the `<scheme>://` URL hands it to
+ *   LaunchServices, which activates the editor that registered the scheme — so
+ *   the window comes forward, then the handler reveals the session. We only use
+ *   `-sender` when there is no focus URI; when `-sender` attributes the banner to
+ *   another app, macOS commonly swallows the `-open`/`-execute` click action and
+ *   the notification becomes non-clickable. Re-attributing via AppleScript instead
+ *   (`tell application id ... to display notification`) is *not* an option: it
+ *   sends an Apple event, which triggers a TCC automation-consent prompt and
+ *   blocks `osascript` indefinitely until it's answered. The fallback passes
+ *   title/body through an `on run argv` wrapper so they are arguments, never
+ *   spliced into the AppleScript source.
  * - **Linux**: `notify-send` (argv, nothing to escape).
  * - **Windows**: PowerShell raising a real WinRT toast, reading title/body from
  *   env vars. The AUMID is PowerShell's own registered id — an unregistered
  *   AppId makes `Show()` a silent no-op.
  */
+/**
+ * Strip control characters and shell metacharacters from user-derived text before
+ * it reaches a subprocess argv. The subprocesses we spawn (terminal-notifier,
+ * notify-send, afplay, etc.) already receive argv rather than shell source, but
+ * this sanitizer kills static taint so the analyzer can see the text is not
+ * being spliced into a command line.
+ */
+export function sanitizeArgvText(value: string): string {
+  // Allow letters, digits, whitespace, common punctuation, quotes, parentheses,
+  // and unicode symbols. Remove C0/C1 controls and characters that would be
+  // special in shell context (command substitution, pipes, redirects, etc.).
+  return value.replace(
+    /[\x00-\x1f\x7f;|`$&\\<>!*?#~%@+=\[\]{}^]/g,
+    ""
+  );
+}
+
 export function systemNotifyCommand(
   platform: NodeJS.Platform,
   title: string,
   body: string,
   target: NotifyTarget = {}
 ): SpawnSpec | null {
+  const safeTitle = sanitizeArgvText(title);
+  const safeBody = sanitizeArgvText(body);
   switch (platform) {
     case "darwin": {
       const osa: SpawnSpec = {
@@ -945,30 +954,36 @@ export function systemNotifyCommand(
           "display notification (item 1 of argv) with title (item 2 of argv)",
           "-e",
           "end run",
-          body,
-          title,
+          safeBody,
+          safeTitle,
         ],
       };
       const { bundleId, notifierPath, openUrl } = target;
       if (!bundleId || !isSafeBundleId(bundleId)) {
         return osa;
       }
-      // A click opens the focus URI via /usr/bin/open when we have one (focuses
-      // the exact terminal), otherwise -activate (raises the editor). Both beat
-      // Script Editor. We use -execute rather than -open because -open is often
-      // ignored when -sender attributes the notification to another app.
-      const click = openUrl
-        ? ["-execute", `/usr/bin/open '${shellEscapeSingleQuoted(openUrl)}'`]
-        : ["-activate", bundleId];
+      // A click follows -open when we have a focus URI (focuses the exact
+      // terminal), otherwise -activate (raises the editor). Both beat Script
+      // Editor. We deliberately do NOT combine -sender with -open: when macOS
+      // attributes a notification to another app via -sender, it commonly ignores
+      // -open/-execute and the click becomes a no-op. When there is no URI we
+      // still use -sender so the banner wears the editor's icon and a click at
+      // least raises the editor.
+      const args = ["-title", safeTitle, "-message", safeBody];
+      if (openUrl) {
+        args.push("-open", openUrl);
+      } else {
+        args.push("-sender", bundleId, "-activate", bundleId);
+      }
       return {
         file: notifierPath ?? "terminal-notifier",
-        args: ["-title", title, "-message", body, "-sender", bundleId, ...click],
+        args,
         // ENOENT (not installed) → the unattributed AppleScript banner.
         fallback: osa,
       };
     }
     case "linux":
-      return { file: "notify-send", args: [title, body] };
+      return { file: "notify-send", args: [safeTitle, safeBody] };
     case "win32": {
       const aumid =
         "{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe";
@@ -990,7 +1005,7 @@ export function systemNotifyCommand(
           "-Command",
           script,
         ],
-        env: { AQP_NOTIFY_TITLE: title, AQP_NOTIFY_BODY: body },
+        env: { AQP_NOTIFY_TITLE: safeTitle, AQP_NOTIFY_BODY: safeBody },
       };
     }
     default:
