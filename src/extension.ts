@@ -1628,12 +1628,11 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   // Clicking an OS notification opens `<scheme>://<extension-id>/focus?session=…`,
-  // which lands here. Opening that URL has already raised the editor window
-  // (LaunchServices activates the app that registered the scheme); this handler
-  // then reveals the specific agent's terminal. The banner is posted with
-  // `-sender <editor bundleId> -open <focusUri>`: `-sender` wears the editor's
-  // icon and `-open` routes the click here so we can focus the particular
-  // session, not just the app. A session whose terminal is gone (closed, or in
+  // which lands here. The banner is posted with `-sender <editor bundleId>` so it
+  // wears the editor's icon, and with `-execute '/usr/bin/open <focusUri>'` so a
+  // click runs `open` and delivers the URI to LaunchServices. LaunchServices
+  // raises the app that registered the scheme, and this handler then reveals the
+  // specific agent's terminal. A session whose terminal is gone (closed, or in
   // another window this host can't see) falls through to the sessions picker
   // rather than no-op. Wrapped so a malformed URI never throws.
   context.subscriptions.push(

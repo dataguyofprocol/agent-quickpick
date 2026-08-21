@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.1] — 2026-08-20
+
+### Fixed
+- **macOS notification clicks are now reliably actionable.** The v0.8.0 `-sender <bundleId> -open <focusUri>` click action was often swallowed by macOS when the banner was attributed to the editor (the most visible symptom: the banner appeared but clicking it did nothing). The banner now uses `-execute '/usr/bin/open "<focusUri>"'` instead, which keeps the editor's icon via `-sender` while making the click run `open` and deliver the URI to our handler. This fixes dead clicks in VS Code forks such as Trae/TraeCode as well as stable VS Code.
+
 ## [0.9.0] — 2026-08-18
 
 ### Added

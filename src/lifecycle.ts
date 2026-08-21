@@ -800,6 +800,14 @@ export function isSafeBundleId(id: string): boolean {
 }
 
 /**
+ * Escape a string for safe inclusion inside a POSIX single-quoted shell word.
+ * The result can be placed between single quotes and passed to /bin/sh -c.
+ */
+function shellEscapeSingleQuoted(value: string): string {
+  return value.replace(/'/g, "'\\''");
+}
+
+/**
  * Everything platform-specific the caller knows about the host editor. All
  * optional: with none of it we still raise a banner, just an unattributed one.
  */
@@ -900,11 +908,14 @@ export function sessionFromFocusUri(
  *   `display notification` is attributed to whatever app *ran* the script —
  *   Script Editor, whose grey icon lands on the banner and whose folder opens in
  *   Finder when you click it. `terminal-notifier` fixes both: `-sender` puts the
- *   editor's icon on the banner, and `-open <focusUri>` routes the click to our
- *   URI handler, which focuses that agent's specific terminal. The click is also
- *   what raises the editor window: opening the `<scheme>://` URL hands it to
- *   LaunchServices, which activates the editor that registered the scheme — so
- *   the window always comes forward, then the handler reveals the session.
+ *   editor's icon on the banner, and `-execute '/usr/bin/open "<focusUri>"'`
+ *   routes the click to our URI handler, which focuses that agent's specific
+ *   terminal. We use `-execute` rather than `-open` because macOS frequently
+ *   ignores `-open` when the notification is attributed to another app via
+ *   `-sender`; the explicit `open` command is delivered reliably. The click is
+ *   also what raises the editor window: opening the `<scheme>://` URL hands it
+ *   to LaunchServices, which activates the editor that registered the scheme —
+ *   so the window comes forward, then the handler reveals the session.
  *   (`-activate <bundleId>` is the fallback click action when there's no URI — it
  *   merely raises the editor.) Re-attributing via AppleScript instead (`tell
  *   application id ... to display notification`) is *not* an option: it sends an
@@ -942,9 +953,13 @@ export function systemNotifyCommand(
       if (!bundleId || !isSafeBundleId(bundleId)) {
         return osa;
       }
-      // A click follows -open when we have a URI (focuses the exact terminal),
-      // otherwise -activate (raises the editor). Both beat Script Editor.
-      const click = openUrl ? ["-open", openUrl] : ["-activate", bundleId];
+      // A click opens the focus URI via /usr/bin/open when we have one (focuses
+      // the exact terminal), otherwise -activate (raises the editor). Both beat
+      // Script Editor. We use -execute rather than -open because -open is often
+      // ignored when -sender attributes the notification to another app.
+      const click = openUrl
+        ? ["-execute", `/usr/bin/open '${shellEscapeSingleQuoted(openUrl)}'`]
+        : ["-activate", bundleId];
       return {
         file: notifierPath ?? "terminal-notifier",
         args: ["-title", title, "-message", body, "-sender", bundleId, ...click],

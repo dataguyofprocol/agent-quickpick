@@ -2,7 +2,7 @@
   "name": "agent-quickpick",
   "displayName": "Agent Quickpick",
   "description": "Quick-pick launcher for agent CLI terminals — Claude, Opencode, Claude Proxy, Claude GLM, oh-my-pi, Droid, Command Code, and your own — opened in the editor area with their own icon and tab color.",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "publisher": "dataguyofprocol",
   "license": "MIT",
   "icon": "icons/icon.png",
