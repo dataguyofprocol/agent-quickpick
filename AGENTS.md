@@ -18,31 +18,40 @@ After making any code change, do both of these before handing back — don't lea
 npm install
 npm run compile        # tsc -p ./ (also the only typecheck; strict mode, no separate lint)
 npm run watch          # tsc -w
-npm test               # runs the suite in a downloaded headless VS Code via @vscode/test-electron
+npm run test:unit      # FAST tier: plain mocha, no VS Code window, ~3s
+npm test               # full gate: test:unit, then the host tier in a real editor window
 npm run package        # vsce package -> *.vsix
 npm run build:iconfont # ONLY when icons/statusbar-glyph.svg changes (rebuilds the woff)
 ```
 
-**`npm test` runs stale code unless you `npm run compile` first.** The test script is `node ./out/test/runTest.js` — it executes compiled JS, and there is no precompile hook. CI runs `compile` → `test`. Always compile after editing `.ts` before testing. There is no way to run a single test file; the runner globs `**/**.test.js` under `out/test/`.
+**Both tiers run stale code unless you `npm run compile` first.** The scripts execute compiled JS under `out/`, and there is no precompile hook. CI runs `compile` → `test`. Always compile after editing `.ts` before testing.
 
-Tests use **mocha TDD UI** (`suite`/`test`, not `describe`/`it`), 60s timeout each. They launch a real VS Code stable window — on macOS you'll see it flash; on Linux CI it's wrapped in `xvfb-run`.
+### Two test tiers
+
+- **Unit tier** (`src/test/unit/*.test.ts`, run by `npm run test:unit`): plain mocha over `out/test/unit/` — no VS Code window, seconds. Anything that imports only `agents.ts` / `lifecycle.ts` / `lifecycle-adapters.ts` belongs here (those modules must stay free of *runtime* `vscode` usage; type-only imports are fine — tsc elides them). This tier also executes the generated hook command and OpenCode plugin for real against a localhost server, and includes the seeded fuzz + repo-consistency suites.
+- **Host tier** (`src/test/suite/*.test.ts`, run inside `@vscode/test-electron`): only what genuinely needs the VS Code API — `resolveIconPath`/`resolveColor` (construct runtime vscode objects), `LifecycleContext`, activation. Uses **mocha TDD UI**, 60s timeout. It launches a real editor window (a local fork binary if found, else downloaded stable VS Code — on macOS you'll see it flash; Linux CI wraps it in `xvfb-run`).
+
+Single-file runs: `npx mocha --ui tdd --exit out/test/unit/<file>.test.js` (compile first). The host tier has no per-file filter — but its rejection message always names failing tests, because some forks (Trae) drop all extension-host console output.
+
+Both tiers use the **mocha TDD UI** (`suite`/`test`, not `describe`/`it`).
 
 No linter or formatter is configured. Don't invent one. `tsc --strict` is the only static gate.
 
 ## Source map
 
-- `src/extension.ts` — `activate`, `BUILTIN_AGENTS`, `loadAgents`, `resolveIconPath`, `resolveColor`, `isCmdInstalled`, `isSafeBinaryName`, frecency, launch, terminal naming, the `LifecycleContext` class.
-- `src/lifecycle.ts` — pure helpers (config read/write, hook merge/strip, status-bar text, notification logic) **plus** the VS Code-coupled localhost HTTP server and exit-status poller. Keep the pure helpers free of `vscode` imports — they're unit-tested without a host.
+- `src/extension.ts` — `activate`, icon/color resolution (`resolveIconPath`/`resolveColor`), launch, the `LifecycleContext` class (exported for host-tier tests), URI handler, commands.
+- `src/agents.ts` — the vscode-free half: `BUILTIN_AGENTS`, `loadAgents`, frecency, install detection (`isCmdInstalled` + cache), `launchText`/`launchDelay`, terminal naming/session matching. Must stay free of *runtime* `vscode` usage so the unit tier can import it.
+- `src/lifecycle.ts` — pure helpers (config read/write, hook merge/strip, status-bar text, notification logic, notify/sound command builders) **plus** the VS Code-coupled localhost HTTP server and exit-status poller. Keep the pure helpers free of runtime `vscode` usage — they're unit-tested without a host.
 - `src/lifecycle-adapters.ts` — one `LifecycleAdapter` per lifecycle-aware agent, a `kind` union: `"command-hooks"` (Claude → `~/.claude/settings.json`, Droid → `~/.factory/settings.json`; same JSON schema) and `"plugin-file"` (OpenCode → a self-contained ESM plugin dropped in `~/.config/opencode/plugin/`, which OpenCode auto-loads — no JSON edit). Adapter paths are **home-relative**; the extension joins them with `os.homedir()`.
-- `src/test/suite/*.test.ts` — unit tests. Pure helpers are exported from `extension.ts` / `lifecycle.ts` specifically so tests can import them without a VS Code host.
+- `src/test/unit/*.test.ts` — unit tier (see above). `src/test/suite/*.test.ts` — host tier.
 - `icons/*.svg` — one per agent. House style: 24×24 viewBox, `rx=6` rounded bg, white glyph on brand fill.
 - `package.json` — `contributes.configuration` (settings schema), `contributes.colors` (closed set of custom theme colors), `contributes.icons` (status-bar glyph), commands, keybinding.
 
 ## Adding a built-in agent
 
 1. Drop a 24×24 SVG in `icons/` (house style).
-2. Add an entry to `BUILTIN_AGENTS` in `src/extension.ts`. Set `launcher` **only** when invocation genuinely requires a package-fetching prefix (`uvx aider`); leave it unset so detection probes the binary on PATH directly.
-3. If you need a brand-new tab color, add a matching `contributes.colors` entry in `package.json` and to `BUILTIN_COLOR_IDS` in `extension.ts`. Otherwise reuse a `terminal.ansi*` key. Theme colors are a **closed set** — VS Code registers them at publish time, so this list must stay in sync with `package.json`.
+2. Add an entry to `BUILTIN_AGENTS` in `src/agents.ts`. Set `launcher` **only** when invocation genuinely requires a package-fetching prefix (`uvx aider`); leave it unset so detection probes the binary on PATH directly.
+3. If you need a brand-new tab color, add a matching `contributes.colors` entry in `package.json` and to `BUILTIN_COLOR_IDS` in `agents.ts`. Otherwise reuse a `terminal.ansi*` key. Theme colors are a **closed set** — VS Code registers them at publish time, so this list must stay in sync with `package.json` (the unit-tier consistency suite enforces both directions, including the icon file existing).
 
 ## Generated / gitignored — do not edit, do not commit
 

@@ -4,6 +4,14 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.3] — 2026-08-22
+
+### Fixed
+- **Hook removal no longer prunes config it doesn't own.** Found by the new fuzz test suite: an install → remove round-trip could delete a user's pre-existing *empty* hook-event array (e.g. `hooks.SessionStart: []`) from `~/.claude/settings.json` / `~/.factory/settings.json`, even though it never contained an Agent Quickpick hook. Events holding none of our hooks now pass through byte-for-byte. (Empty arrays on the events we wire are still absorbed by install and pruned by remove — absent and empty are equivalent to the agent CLIs.)
+
+### Changed
+- **Internal static-analysis cleanup; no user-facing behavior change.** Follow-up to the post-v0.9.2 security-scan triage: the lenient OpenCode config-dir resolver (already uncalled) was deleted, and its strict production logic moved into a pure, unit-tested `resolveValidatedOpenCodeConfigDir(env, platform, homedir)` that the extension feeds a module-load env snapshot — config-dir resolution no longer reads `process.env` outside module load. `notifierCandidates` lost its dead `$PATH` parameter; `$PATH` is deliberately never probed for `terminal-notifier`.
+
 ## [0.9.2] — 2026-08-20
 
 ### Fixed

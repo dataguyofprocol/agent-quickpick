@@ -13,7 +13,7 @@
  *  - OpenCode ("plugin-file"): a self-contained ESM plugin dropped into
  *    OpenCode's config dir under `plugin/`, which OpenCode auto-loads (glob
  *    `{plugin,plugins}/*.{ts,js}`). No JSON config edit needed. The config dir
- *    is resolved per-platform by {@link resolveOpenCodeConfigDir} (NOT a
+ *    is resolved per-platform by {@link resolveValidatedOpenCodeConfigDir} (NOT a
  *    hardcoded `~/.config/opencode`, which is wrong on Windows and ignores
  *    `OPENCODE_CONFIG_DIR`); the extension joins the resolved dir with
  *    {@link OPENCODE_ADAPTER.pluginPath}.
@@ -132,21 +132,16 @@ const OPENCODE_PLUGIN_MARKER = "agentQuickpick:opencode";
  * dropping this file there wires OpenCode globally with no JSON edit. The
  * `.js` extension (not `.mjs`) matches OpenCode's discovery glob; the file is
  * ESM and loaded via `pathToFileURL` + dynamic import. The config dir itself is
- * resolved per-platform at install time by {@link resolveOpenCodeConfigDir}.
+ * resolved per-platform at install time by {@link resolveValidatedOpenCodeConfigDir}.
  */
 const OPENCODE_PLUGIN_FILE = "plugin/agent-quickpick-lifecycle.js";
 
 /**
- * Resolve OpenCode's config directory across platforms. OpenCode itself uses
- * `xdg-basedir`, whose effective path is NOT `~/.config` on Windows or when an
- * override is set. Resolution order (matching OpenCode's source):
- *  1. `OPENCODE_CONFIG_DIR` env var — the explicit OpenCode override, always wins.
- *  2. `XDG_CONFIG_HOME` env var — the XDG override.
- *  3. On Windows: `%APPDATA%` (xdg-basedir's Windows fallback), then
- *     `%LOCALAPPDATA%`, then home — each joined with `opencode`.
- *  4. Otherwise (macOS/Linux): `~/.config/opencode`.
- *
- * The extension joins the result with {@link OPENCODE_ADAPTER.pluginPath}.
+ * True when `fsPath` is an absolute path **on the given target platform** —
+ * a drive letter on Windows, a leading `/` elsewhere. The target platform is
+ * a parameter, not the host's, because hooks are written for agents that run
+ * on this machine but the check must match the path shapes each platform's
+ * overrides actually produce.
  */
 export function isAbsoluteForPlatform(fsPath: string, platform: string): boolean {
   if (platform === "win32") {
@@ -155,30 +150,53 @@ export function isAbsoluteForPlatform(fsPath: string, platform: string): boolean
   return fsPath.startsWith("/");
 }
 
-export function resolveOpenCodeConfigDir(
+/**
+ * Resolve OpenCode's config directory across platforms, then verify the result
+ * is absolute for the target platform before it is ever joined with the plugin
+ * path. OpenCode itself uses `xdg-basedir`, whose effective path is NOT
+ * `~/.config` on Windows or when an override is set. Resolution order (matching
+ * OpenCode's source):
+ *  1. `OPENCODE_CONFIG_DIR` env var — the explicit OpenCode override, always
+ *     wins, and must be absolute: a relative value throws rather than being
+ *     silently anchored somewhere the user didn't ask for.
+ *  2. `XDG_CONFIG_HOME` env var — the XDG override (relative values are
+ *     anchored to `homedir`).
+ *  3. On Windows: `%APPDATA%` (xdg-basedir's Windows fallback), then
+ *     `%LOCALAPPDATA%`, then home — each joined with `opencode`.
+ *  4. Otherwise (macOS/Linux): `~/.config/opencode`.
+ *
+ * Every branch normalizes, so traversal segments in an accepted override are
+ * collapsed, and the final absoluteness check guarantees
+ * `path.join(result, pluginPath)` cannot be redirected to a relative location.
+ * Throws on any violation. Pure (no `vscode` import); the extension feeds it
+ * an env snapshot taken at module load.
+ */
+export function resolveValidatedOpenCodeConfigDir(
   env: NodeJS.ProcessEnv,
   platform: string,
   homedir: string
 ): string {
-  // Resolve explicit overrides as absolute paths on the target platform.
-  // Relative values are anchored to the user's home directory so a value like
-  // "../../etc" cannot escape via the current working directory.
+  let configDir: string;
   if (env.OPENCODE_CONFIG_DIR) {
-    return isAbsoluteForPlatform(env.OPENCODE_CONFIG_DIR, platform)
-      ? path.normalize(env.OPENCODE_CONFIG_DIR)
-      : path.resolve(homedir, env.OPENCODE_CONFIG_DIR);
-  }
-  if (env.XDG_CONFIG_HOME) {
+    if (!isAbsoluteForPlatform(env.OPENCODE_CONFIG_DIR, platform)) {
+      throw new Error("OPENCODE_CONFIG_DIR must be an absolute path");
+    }
+    configDir = path.normalize(env.OPENCODE_CONFIG_DIR);
+  } else if (env.XDG_CONFIG_HOME) {
     const base = isAbsoluteForPlatform(env.XDG_CONFIG_HOME, platform)
       ? env.XDG_CONFIG_HOME
       : path.join(homedir, env.XDG_CONFIG_HOME);
-    return path.join(base, "opencode");
-  }
-  if (platform === "win32") {
+    configDir = path.join(base, "opencode");
+  } else if (platform === "win32") {
     const root = env.APPDATA ?? env.LOCALAPPDATA ?? homedir;
-    return path.join(root, "opencode");
+    configDir = path.join(root, "opencode");
+  } else {
+    configDir = path.resolve(path.join(homedir, ".config", "opencode"));
   }
-  return path.resolve(path.join(homedir, ".config", "opencode"));
+  if (!isAbsoluteForPlatform(configDir, platform)) {
+    throw new Error(`Resolved OpenCode config dir is not absolute: ${configDir}`);
+  }
+  return path.normalize(configDir);
 }
 
 /**

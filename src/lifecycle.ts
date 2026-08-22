@@ -481,7 +481,9 @@ export function mergeCommandHooks(
  * Strip our command hooks (by marker, any schema version) from a Claude/Droid-
  * style config. Idempotent. Prunes an event left with no entries and an empty
  * `hooks` section. Leaves user hooks intact even when one shares an entry with
- * ours — see {@link filterEventEntries}.
+ * ours — see {@link filterEventEntries}. Events that contain none of our hooks
+ * (including a pre-existing empty array) are left exactly as-is, so
+ * install → remove is a true round-trip.
  */
 export function stripCommandHooks(
   parsedConfig: unknown,
@@ -493,6 +495,21 @@ export function stripCommandHooks(
   for (const event of Object.keys(hooksSection)) {
     const arr = hooksSection[event];
     if (!Array.isArray(arr)) continue;
+
+    // Only touch events that actually contain a hook of ours. This preserves
+    // everything else byte-for-byte — including a user's empty `[]` array,
+    // which must not be pruned by a round-trip that never owned it.
+    const hasOurs = arr.some(
+      (entry) =>
+        entry &&
+        typeof entry === "object" &&
+        !Array.isArray(entry) &&
+        Array.isArray((entry as Record<string, unknown>).hooks) &&
+        ((entry as Record<string, unknown>).hooks as unknown[]).some((h) =>
+          isOurHook(h, marker)
+        )
+    );
+    if (!hasOurs) continue;
 
     const filtered = filterEventEntries(arr, marker, () => false);
     if (filtered.length === 0) {
@@ -830,32 +847,29 @@ export const VENDORED_NOTIFIER_REL =
 
 /**
  * Ordered candidate paths for `terminal-notifier` on macOS. A user's own install
- * wins first (Homebrew Apple-silicon, Homebrew Intel, MacPorts, then `$PATH`) so
- * power users keep running their newer build; the extension's bundled universal
- * `.app` is the final candidate, so a fresh install with nothing on `$PATH` still
- * gets a banner that wears the running editor's icon (via `-sender`) instead of
- * Script Editor's. Returns `[]` off macOS — `terminal-notifier` is darwin-only.
+ * wins first (Homebrew Apple-silicon, Homebrew Intel, MacPorts) so power users
+ * keep running their newer build; the extension's bundled universal `.app` is
+ * the final candidate, so a fresh install still gets a banner that wears the
+ * running editor's icon (via `-sender`) instead of Script Editor's. Returns
+ * `[]` off macOS — `terminal-notifier` is darwin-only. `$PATH` is deliberately
+ * not probed: a GUI-launched editor inherits launchd's minimal PATH anyway,
+ * so scanning `process.env.PATH` would add env-derived taint for candidates
+ * that can't exist in practice.
  *
  * Pure (no `vscode` import) so it can be unit-tested without a host, matching the
  * convention for the notification-resolution helpers.
  */
 export function notifierCandidates(
   extensionPath: string,
-  platform: NodeJS.Platform,
-  pathEnv: string | undefined
+  platform: NodeJS.Platform
 ): string[] {
   if (platform !== "darwin") {
     return [];
   }
-  const fromPath = (pathEnv ?? "")
-    .split(path.delimiter)
-    .filter(Boolean)
-    .map((dir) => path.join(dir, "terminal-notifier"));
   return [
     "/opt/homebrew/bin/terminal-notifier", // Homebrew, Apple silicon
     "/usr/local/bin/terminal-notifier", // Homebrew, Intel
     "/opt/local/bin/terminal-notifier", // MacPorts
-    ...fromPath,
     path.join(extensionPath, VENDORED_NOTIFIER_REL), // bundled universal fallback
   ];
 }

@@ -2,7 +2,7 @@
   "name": "agent-quickpick",
   "displayName": "Agent Quickpick",
   "description": "Quick-pick launcher for agent CLI terminals — Claude, Opencode, Claude Proxy, Claude GLM, oh-my-pi, Droid, Command Code, and your own — opened in the editor area with their own icon and tab color.",
-  "version": "0.9.2",
+  "version": "0.9.3",
   "publisher": "dataguyofprocol",
   "license": "MIT",
   "icon": "icons/icon.png",
@@ -43,7 +43,10 @@
     "package": "vsce package",
     "publish:vscode": "vsce publish",
     "publish:openvsx": "ovsx publish",
-    "test": "node ./out/test/runTest.js"
+    "test:unit": "mocha --ui tdd --timeout 10000 --exit out/test/unit/*.test.js",
+    "pretest:unit": "npm run compile",
+    "pretest": "npm run compile",
+    "test": "npm run test:unit && node ./out/test/runTest.js"
   },
   "contributes": {
     "icons": {
