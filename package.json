@@ -256,7 +256,7 @@
     "@vscode/vsce": "^3.2.1",
     "glob": "^13.0.6",
     "mocha": "^10.8.2",
-    "ovsx": "^0.10.1",
+    "ovsx": "^1.1.1",
     "svg2ttf": "^6.1.0",
     "svgicons2svgfont": "^16.0.0",
     "ttf2woff": "^3.0.0",
