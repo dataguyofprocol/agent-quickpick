@@ -116,3 +116,78 @@ suite("buildNodeHookCommand", () => {
     assert.ok(cmd.includes("message:j?.message||''"), "hook POST body should carry the stdin message");
   });
 });
+
+suite("buildNodeHookCommand report specs", () => {
+  test("constant reason is baked into the POST body", () => {
+    const cmd = buildNodeHookCommand(
+      HOOK_URL, SESSION, "agentQuickpick:codex", "waiting", PORT_FILE_PATH,
+      { reason: "permission" }
+    );
+    assert.ok(
+      cmd.includes("reason:'permission'"),
+      "constant reason should be embedded verbatim"
+    );
+  });
+
+  test("no reason → reason:undefined (dropped by JSON.stringify)", () => {
+    const cmd = buildNodeHookCommand(HOOK_URL, SESSION, "agentQuickpick:test", "finished", PORT_FILE_PATH);
+    assert.ok(
+      cmd.includes("reason:undefined"),
+      "unset reason should serialize as undefined so the field is omitted"
+    );
+  });
+
+  test("statusExpr overrides the positional status and is parenthesized", () => {
+    const cmd = buildNodeHookCommand(
+      HOOK_URL, SESSION, "agentQuickpick:antigravity", "finished", PORT_FILE_PATH,
+      { statusExpr: "j?.x==='error'?'failed':'finished'" }
+    );
+    assert.ok(
+      cmd.includes("status:(j?.x==='error'?'failed':'finished')"),
+      "expression should be spliced in parenthesized"
+    );
+    assert.ok(
+      !cmd.includes("status:'finished'"),
+      "the constant must not also appear as the status"
+    );
+  });
+
+  test("reasonExpr and constant reason are mutually exclusive (expr wins)", () => {
+    const cmd = buildNodeHookCommand(
+      HOOK_URL, SESSION, "agentQuickpick:test", "waiting", PORT_FILE_PATH,
+      { reason: "question", reasonExpr: "j?.a?'permission':undefined" }
+    );
+    assert.ok(cmd.includes("reason:(j?.a?'permission':undefined)"));
+    assert.ok(!cmd.includes("reason:'question'"));
+  });
+
+  test("cwdExpr replaces the default j?.cwd read and guards emptiness", () => {
+    const cmd = buildNodeHookCommand(
+      HOOK_URL, SESSION, "agentQuickpick:test", "running", PORT_FILE_PATH,
+      { cwdExpr: "j?.workspacePaths?.[0]" }
+    );
+    assert.ok(
+      cmd.includes("cwd:(j?.workspacePaths?.[0])||''"),
+      "cwd expression should be parenthesized with an ||'' guard"
+    );
+    assert.ok(!cmd.includes("cwd:j?.cwd"), "the default cwd read must be replaced");
+  });
+
+  test("hostile expressions stay out of the escaping path (spec is our code, not user input)", () => {
+    // The spec contract: expressions are compile-time constants from adapter
+    // code. We can't defend against ourselves, but we pin that the builder
+    // never *needs* to escape them — i.e. existing escapes (url/session/port)
+    // still apply unchanged when a spec is present.
+    const cmd = buildNodeHookCommand(
+      "http://127.0.0.1:9999/path?x='\\",
+      "Claude's (\\2)",
+      "agentQuickpick:test",
+      "waiting",
+      "/tmp/aqp'\\port.json",
+      { reason: "permission", statusExpr: "j?.x?'failed':'waiting'" }
+    );
+    assert.ok(cmd.includes("\\'"), "single quote escaping still applies");
+    assert.ok(cmd.includes("\\\\"), "backslash escaping still applies");
+    assert.doesNotThrow(() => JSON.parse(JSON.stringify({ command: cmd })));
+  });
+});

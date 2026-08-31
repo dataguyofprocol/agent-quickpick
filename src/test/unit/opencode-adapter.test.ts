@@ -17,6 +17,8 @@ import {
   isLifecycleAgent,
   CLAUDE_ADAPTER,
   DROID_ADAPTER,
+  CODEX_ADAPTER,
+  ANTIGRAVITY_ADAPTER,
 } from "../../lifecycle-adapters";
 
 const HOOK_URL = "http://127.0.0.1:99999";
@@ -112,27 +114,33 @@ suite("buildOpenCodePluginSource", () => {
 });
 
 suite("adapter registry", () => {
-  test("has all three adapters", () => {
+  test("has all five adapters", () => {
     assert.ok(LIFECYCLE_ADAPTERS.Claude);
     assert.ok(LIFECYCLE_ADAPTERS.Droid);
+    assert.ok(LIFECYCLE_ADAPTERS.Codex);
+    assert.ok(LIFECYCLE_ADAPTERS.Antigravity);
     assert.ok(LIFECYCLE_ADAPTERS.OpenCode);
   });
 
   test("getAdapter returns by name", () => {
     assert.strictEqual(getAdapter("Claude"), CLAUDE_ADAPTER);
     assert.strictEqual(getAdapter("Droid"), DROID_ADAPTER);
+    assert.strictEqual(getAdapter("Codex"), CODEX_ADAPTER);
+    assert.strictEqual(getAdapter("Antigravity"), ANTIGRAVITY_ADAPTER);
     assert.strictEqual(getAdapter("OpenCode"), OPENCODE_ADAPTER);
   });
 
   test("getAdapter returns undefined for unsupported agent", () => {
-    assert.strictEqual(getAdapter("Codex"), undefined);
+    assert.strictEqual(getAdapter("Aider"), undefined);
   });
 
   test("isLifecycleAgent is correct", () => {
     assert.ok(isLifecycleAgent("Claude"));
     assert.ok(isLifecycleAgent("Droid"));
+    assert.ok(isLifecycleAgent("Codex"));
+    assert.ok(isLifecycleAgent("Antigravity"));
     assert.ok(isLifecycleAgent("OpenCode"));
-    assert.ok(!isLifecycleAgent("Codex"));
+    assert.ok(!isLifecycleAgent("Aider"));
     assert.ok(!isLifecycleAgent("Terminal"));
   });
 

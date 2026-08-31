@@ -16,7 +16,7 @@ Built by a dev for devs who run CLI coding agents in VS Code (or Cursor, Windsur
 
 - **Zero configuration required**: Works instantly out of the box. It probes your `PATH` automatically and shows you only the agent CLIs you actually have installed.
 - **Editor tabs, not bottom panel**: Terminals open as real editor tabs. Split them side-by-side or stacked to run Claude, Aider, and OpenCode simultaneously in the same window.
-- **Icons & theme colors out of the box**: Every agent (Claude, Gemini, Codex, Goose, Aider, etc.) gets a distinct icon and tab color so you can identify active sessions at a glance.
+- **Icons & theme colors out of the box**: Every agent (Claude, Codex, Antigravity, Goose, Aider, etc.) gets a distinct icon and tab color so you can identify active sessions at a glance.
 - **Frecency sorting**: The agents you launch most float to the top automatically. Order syncs across machines via Settings Sync.
 - **Clean & non-intrusive**: Agents not found on your system stay hidden by default so your picker stays clean—click the eye icon in the title bar anytime to reveal them.
 - **Know when an agent needs you**: Lifecycle hooks (installed once per agent) fire native OS notifications, in-editor toasts with a **Show** button, and a sound cue when an agent finishes a task or is waiting for input — even when VS Code is behind another app or on another Space. Works in **every repo**, not just this one.
@@ -32,7 +32,7 @@ No configuration needed—if the tool is on your `PATH`, Agent Quickpick detects
 |---|---|---|---|
 | Claude | `claude` | Goose | `goose` |
 | Codex | `codex` | Crush | `crush` |
-| Gemini | `gemini` | Amp | `amp` |
+| Antigravity | `agy` | Amp | `amp` |
 | Copilot | `gh copilot` | Droid | `droid` |
 | OpenCode | `opencode` | Qwen | `qwen` |
 | Command Code | `cmd` | Plandex | `plandex` |
@@ -107,7 +107,7 @@ Most developers never need to touch settings. But if you have custom scripts, pa
 
 ### Lifecycle notifications
 
-The first time you launch Claude Code, OpenCode, or Droid, Agent Quickpick offers to install a one-time hook so it can notify you when that agent finishes or needs input — in every repo, not just this one. The hook is scoped to sessions launched from Agent Quickpick and does nothing in terminals you open elsewhere.
+The first time you launch Claude Code, Codex, Antigravity, OpenCode, or Droid, Agent Quickpick offers to install a one-time hook so it can notify you when that agent finishes or needs input — in every repo, not just this one. The hook is scoped to sessions launched from Agent Quickpick and does nothing in terminals you open elsewhere.
 
 - **Where it lives**: your user-level agent config (e.g. `~/.claude/settings.json`), merged in alongside anything already there.
 - **Remove it**: run **Remove Lifecycle Hooks** from the Command Palette, or turn off `agentQuickpick.lifecycleNotifications` in settings.
@@ -149,5 +149,7 @@ The **Agent** item shows a live count of running agents **for the active repo on
 ## License & Notes
 
 - License: [MIT](./LICENSE) *(Icons are stylized original artwork)*
+- Contributing: [CONTRIBUTING.md](./CONTRIBUTING.md)
+- Security policy & vulnerability reporting: [SECURITY.md](./SECURITY.md)
 - Maintenance & local setup notes: [MAINTAINERS.md](./MAINTAINERS.md)
 - Release history: [CHANGELOG.md](./CHANGELOG.md)

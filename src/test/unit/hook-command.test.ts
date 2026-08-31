@@ -43,11 +43,18 @@ function runHook(
   cmd: string,
   opts: { env?: Record<string, string>; stdin?: string } = {}
 ): Promise<RunResult> {
+  // Hermetic: strip any ambient AQP_* env this test process inherited (e.g.
+  // the tests running inside a terminal agent-quickpick itself launched —
+  // AQP_SESSION/AQP_HOOK_URL there belong to the editor session, not us).
+  const env: Record<string, string> = { ...process.env } as Record<string, string>;
+  delete env.AQP_SESSION;
+  delete env.AQP_HOOK_URL;
+  Object.assign(env, opts.env);
   return new Promise((resolve, reject) => {
     const child = execFile(
       process.execPath, // the same node running the tests
       ["-e", extractScript(cmd)],
-      { env: { ...process.env, ...opts.env } },
+      { env },
       (_error, _stdout, stderr) => {
         // The callback fires on exit whatever the code; exitCode is the truth.
         resolve({ code: child.exitCode, stderr: String(stderr) });

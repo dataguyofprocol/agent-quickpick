@@ -4,6 +4,20 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] — 2026-08-24
+
+### Added
+- **Lifecycle awareness for Codex.** Codex CLI (≥ 0.124, where hooks are stable) now reports working / done / blocked / crashed like Claude, OpenCode, and Droid did — status-bar counts, toasts, OS notifications, click-to-focus. Its `PermissionRequest` hook event is a *typed* permission ask, so waiting toasts say "Codex wants to run a command — approve?" directly, with no free-text classification. Hooks install globally into `~/.codex/hooks.json` (same prompt-once flow, same **Remove Lifecycle Hooks** command).
+- **Lifecycle awareness for Antigravity (`agy`).** Antigravity CLI events map onto live status with higher fidelity than any other adapter: a `Stop` whose payload says `terminationReason: "error"` reports **crashed**, one with `fullyIdle: false` (background tasks still running) stays **working**, and `PreToolUse` on `ask_permission` / `ask_question` reports **blocked** with the matching reason ("wants a command approved" / "asked a question"). Hooks install as a single named entry (`agent-quickpick`) in `~/.gemini/config/hooks.json`; a user's `enabled: false` toggle (agy's `/hooks disable`) survives every upgrade.
+- **Antigravity built-in launcher** (`agy`, own icon, blue tab) — install detection works like every other CLI.
+
+### Changed
+- **Hook schema v4.** Generated hook commands now carry a `reason` field (typed waiting reasons) and support payload-derived statuses. Existing Claude/Droid installs are silently upgraded on the next window activation — no reinstall needed.
+- **Gemini CLI support removed.** Google transitioned Gemini CLI to Antigravity CLI; the `gemini` built-in launcher is gone in favor of `agy`. Enterprise/paid users who still run `gemini` can re-add it via `agentQuickpick.agents` in settings (`gemini.svg` is still shipped, so the icon keeps resolving).
+
+### Fixed
+- **Hook-execution tests are hermetic.** Running `npm test` inside a terminal that Agent Quickpick itself launched (which injects `AQP_SESSION` / `AQP_HOOK_URL` into the shell) could make behavioral hook tests post to the *editor's* hook server or spuriously pass their no-op guard. The spawned-command harnesses now strip ambient `AQP_*` env before applying test values.
+
 ## [0.9.3] — 2026-08-22
 
 ### Fixed

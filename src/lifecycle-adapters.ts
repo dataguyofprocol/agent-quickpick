@@ -4,12 +4,20 @@
  * Hooks are installed **globally** (once per agent, into the agent's user-level
  * config), never per-workspace — see the LifecycleAdapter docs in lifecycle.ts.
  *
- * Two mechanisms:
- *  - Claude Code and Droid ("command-hooks"): identical JSON schema
- *      { hooks: { <Event>: [ { hooks: [ { type:"command", command } ] } ] } }
- *    installed into `~/.claude/settings.json` and `~/.factory/settings.json`.
- *    Adapter paths are home-relative; the extension joins them with
- *    `os.homedir()`.
+ * Three mechanisms:
+ *  - Claude Code, Droid, and Codex ("command-hooks", Claude schema): identical
+ *      JSON shape `{ hooks: { <Event>: [ { hooks: [ { type:"command", command } ] } ] } }`
+ *      in `~/.claude/settings.json`, `~/.factory/settings.json`, and
+ *      `~/.codex/hooks.json` (Codex ≥ 0.124, where hooks are stable). Adapter
+ *      paths are home-relative; the extension joins them with `os.homedir()`.
+ *  - Antigravity ("command-hooks", named-registry schema): `hooks.json` maps
+ *      *hook names* to definitions — `{ "<name>": { enabled?, <Event>: [...] } }`
+ *      — in `~/.gemini/config/hooks.json` (all three AGY flavours read it).
+ *      Shares the CommandHookAdapter interface; only the merge/strip internals
+ *      differ (see mergeNamedHooks in lifecycle.ts). Events: Stop (payload
+ *      distinguishes error / not-idle / finished), PreInvocation (running),
+ *      PreToolUse matcher `ask_permission|ask_question` (waiting, with the
+ *      reason derived from the tool name).
  *  - OpenCode ("plugin-file"): a self-contained ESM plugin dropped into
  *    OpenCode's config dir under `plugin/`, which OpenCode auto-loads (glob
  *    `{plugin,plugins}/*.{ts,js}`). No JSON config edit needed. The config dir
@@ -25,10 +33,14 @@ import {
   type CommandHookAdapter,
   type PluginFileAdapter,
   type LifecycleStatus,
+  type NamedHookEventSpec,
   mergeCommandHooks,
   stripCommandHooks,
   hasCommandHooks,
   hasCurrentCommandHooks,
+  mergeNamedHooks,
+  stripNamedHooks,
+  hasCurrentNamedHooks,
 } from "./lifecycle";
 
 // ---------------------------------------------------------------------------
@@ -118,6 +130,146 @@ export const DROID_ADAPTER: CommandHookAdapter = commandHookAdapter(
   ".factory/settings.json",
   "agentQuickpick:droid",
   ["Stop", "Notification", "UserPromptSubmit"]
+);
+
+// ---------------------------------------------------------------------------
+// Codex (OpenAI)
+// ---------------------------------------------------------------------------
+
+/**
+ * Codex CLI. Hooks live in the global `~/.codex/hooks.json` and use the **same
+ * nested schema as Claude** (`{ matcher?, hooks: [{ type, command }] }`, one
+ * entry array per event). Requires Codex ≥ 0.124, where hooks graduated from
+ * the `codex_hooks` feature flag to stable.
+ *
+ * Events: `Stop` (turn finished), `PermissionRequest` (agent wants a tool or
+ * command approved — a *typed* permission signal, so the hook reports the
+ * waiting reason directly rather than classifying free text),
+ * `UserPromptSubmit` (working again mid-turn).
+ * stdin payload: `{ session_id, cwd, hook_event_name, turn_id? }`.
+ */
+export const CODEX_ADAPTER: CommandHookAdapter = commandHookAdapter(
+  "Codex",
+  ".codex/hooks.json",
+  "agentQuickpick:codex",
+  ["Stop", "PermissionRequest", "UserPromptSubmit"]
+);
+
+// ---------------------------------------------------------------------------
+// Antigravity (named-registry schema)
+// ---------------------------------------------------------------------------
+
+/**
+ * Create a command-hook adapter for an agent whose hooks file uses
+ * Antigravity's **named-registry** schema. Satisfies the same
+ * {@link CommandHookAdapter} interface as {@link commandHookAdapter}, so the
+ * install/prompt/upgrade/remove plumbing in extension.ts needs no per-agent
+ * code — only the merge/strip/detect internals route to the named-registry
+ * helpers.
+ */
+function namedHookAdapter(
+  agentName: string,
+  configPath: string,
+  marker: string,
+  hookName: string,
+  events: readonly NamedHookEventSpec[]
+): CommandHookAdapter {
+  return {
+    kind: "command-hooks",
+    agentName,
+    configPath,
+    marker,
+
+    mergeHooks(
+      parsedConfig: unknown,
+      hookUrl: string,
+      session: string,
+      portFilePath: string
+    ): unknown {
+      return mergeNamedHooks(
+        parsedConfig,
+        hookName,
+        events,
+        hookUrl,
+        session,
+        marker,
+        portFilePath
+      );
+    },
+
+    stripHooks(parsedConfig: unknown): unknown {
+      return stripNamedHooks(parsedConfig, hookName, marker);
+    },
+
+    hasOurHooks(parsedConfig: unknown): boolean {
+      return hasCommandHooks(parsedConfig, marker);
+    },
+
+    hasCurrentHooks(parsedConfig: unknown): boolean {
+      return hasCurrentNamedHooks(parsedConfig, hookName, marker, events);
+    },
+  };
+}
+
+/** The name our hook definition is registered under in Antigravity's hooks.json. */
+const ANTIGRAVITY_HOOK_NAME = "agent-quickpick";
+
+/**
+ * Antigravity reports its working directory as `workspacePaths[0]` (camelCase
+ * common field), not a top-level `cwd`.
+ */
+const ANTIGRAVITY_CWD_EXPR = "j?.workspacePaths?.[0]";
+
+/**
+ * Antigravity CLI (`agy`). Hooks live in the global
+ * `~/.gemini/config/hooks.json` under a single named entry.
+ *
+ * Events:
+ *  - `Stop` — the payload itself says how the run ended:
+ *    `terminationReason === "error"` → **failed**; `fullyIdle === false`
+ *    (background tasks still running) → keep **running**; otherwise
+ *    **finished**. Richer than Claude's Stop, which is always "finished".
+ *  - `PreInvocation` — before each model call → **running**.
+ *  - `PreToolUse` with matcher `ask_permission|ask_question` → **waiting**,
+ *    reason derived from `toolCall.name` ("wants a command approved" /
+ *    "asked a question").
+ *
+ * stdin payload (camelCase): `{ conversationId, workspacePaths, toolCall?,
+ * terminationReason?, fullyIdle? }`.
+ */
+const ANTIGRAVITY_EVENTS: readonly NamedHookEventSpec[] = [
+  {
+    event: "Stop",
+    status: "finished",
+    spec: {
+      statusExpr:
+        "j?.terminationReason==='error'?'failed':j?.fullyIdle===false?'running':'finished'",
+      cwdExpr: ANTIGRAVITY_CWD_EXPR,
+    },
+  },
+  {
+    event: "PreInvocation",
+    status: "running",
+    spec: { cwdExpr: ANTIGRAVITY_CWD_EXPR },
+  },
+  {
+    event: "PreToolUse",
+    matcher: "ask_permission|ask_question",
+    status: "waiting",
+    spec: {
+      reasonExpr:
+        "j?.toolCall?.name==='ask_permission'?'permission':j?.toolCall?.name==='ask_question'?'question':undefined",
+      cwdExpr: ANTIGRAVITY_CWD_EXPR,
+    },
+  },
+];
+
+export const ANTIGRAVITY_ADAPTER: CommandHookAdapter = namedHookAdapter(
+  "Antigravity",
+  ".gemini/config/hooks.json",
+  "agentQuickpick:antigravity",
+  ANTIGRAVITY_HOOK_NAME,
+  ANTIGRAVITY_EVENTS
 );
 
 // ---------------------------------------------------------------------------
@@ -325,6 +477,8 @@ export const OPENCODE_ADAPTER: PluginFileAdapter = {
 export const LIFECYCLE_ADAPTERS: Record<string, LifecycleAdapter> = {
   Claude: CLAUDE_ADAPTER,
   Droid: DROID_ADAPTER,
+  Codex: CODEX_ADAPTER,
+  Antigravity: ANTIGRAVITY_ADAPTER,
   OpenCode: OPENCODE_ADAPTER,
 };
 

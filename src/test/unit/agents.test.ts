@@ -36,16 +36,22 @@ suite("loadAgents", () => {
   test("canonical agents ARE in the defaults", () => {
     const agents = loadAgents(undefined);
     const names = agents.map((a) => a.name);
-    for (const expected of ["Codex", "Gemini", "Copilot", "Aider", "Goose", "Crush", "Amp", "Qwen", "Plandex", "Grok", "Cody", "Kilo", "Qodo"]) {
+    for (const expected of ["Codex", "Antigravity", "Copilot", "Aider", "Goose", "Crush", "Amp", "Qwen", "Plandex", "Grok", "Cody", "Kilo", "Qodo"]) {
       assert.ok(names.includes(expected), `${expected} should be a default`);
     }
+  });
+
+  test("Gemini is NOT a default (replaced by Antigravity when Gemini CLI sunset)", () => {
+    const agents = loadAgents(undefined);
+    assert.ok(!agents.some((a) => a.name === "Gemini"), "Gemini should not be a built-in");
+    assert.ok(agents.some((a) => a.cmd === "agy"), "Antigravity (agy) should be a built-in");
   });
 
   test("every lifecycle-aware agent is a built-in (launch wiring depends on it)", () => {
     // getAdapter/LIFECYCLE_ADAPTERS names must exist in the defaults, else
     // launching that agent from the picker would skip hook env injection.
     const names = new Set(loadAgents(undefined).map((a) => a.name.toLowerCase()));
-    for (const expected of ["claude", "droid", "opencode"]) {
+    for (const expected of ["claude", "droid", "codex", "antigravity", "opencode"]) {
       assert.ok(names.has(expected), `${expected} must be a built-in agent`);
     }
   });

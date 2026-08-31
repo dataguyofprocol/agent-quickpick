@@ -1,0 +1,35 @@
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      typescript-tooling:
+        patterns:
+          - "typescript"
+          - "@types/*"
+      test-tooling:
+        patterns:
+          - "mocha"
+          - "@types/mocha"
+          - "@vscode/test-electron"
+      packaging:
+        patterns:
+          - "@vscode/vsce"
+          - "ovsx"
+    versioning-strategy: "increase"
+    open-pull-requests-limit: 5
+    labels:
+      - "C: dependencies"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      actions:
+        patterns:
+          - "*"
+    labels:
+      - "C: dependencies"

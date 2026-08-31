@@ -2,11 +2,12 @@
  * Agent lifecycle awareness — shared core.
  *
  * Lets Agent Quickpick track per-session status (running / finished / waiting /
- * failed) for lifecycle-aware agents (Claude Code, OpenCode, Droid) and surface
- * it via notifications + a live status-bar count. Each agent's hook mechanism is
- * abstracted behind a {@link LifecycleAdapter}; the shared core is agnostic to
- * whether an agent uses command hooks (Claude/Droid) or a file-based plugin
- * (OpenCode).
+ * failed) for lifecycle-aware agents (Claude Code, Codex, Antigravity, OpenCode,
+ * Droid) and surface it via notifications + a live status-bar count. Each
+ * agent's hook mechanism is abstracted behind a {@link LifecycleAdapter}; the
+ * shared core is agnostic to whether an agent uses command hooks
+ * (Claude/Droid/Codex — Claude schema; Antigravity — named-registry schema) or
+ * a file-based plugin (OpenCode).
  *
  * Pure functions are exported for unit testing; the HTTP server + polling are
  * VS Code-coupled and live at the bottom.
@@ -293,7 +294,7 @@ export type LifecycleAdapter = CommandHookAdapter | PluginFileAdapter;
  * (extension.ts), which silently rewrites stale installs on activation so
  * existing users get new hook behavior without reinstalling anything.
  */
-export const HOOK_SCHEMA_VERSION = 3;
+export const HOOK_SCHEMA_VERSION = 4;
 
 /** The version tag embedded alongside a marker; shared by embed + detect sites. */
 function versionTag(marker: string): string {
@@ -301,10 +302,57 @@ function versionTag(marker: string): string {
 }
 
 /**
+ * How a generated hook computes the report it POSTs.
+ *
+ * Everything here is a **compile-time constant written by our own adapter
+ * code** — never user input — so embedding these expressions in the generated
+ * `node -e` script adds no injection surface beyond what the builder already
+ * escapes (hook URL, session, port-file path).
+ *
+ * Most agents need only the builder's positional `status` argument (a
+ * constant). The optional expressions exist for agents whose hook payload
+ * itself carries enough signal to derive the report — e.g. Antigravity's
+ * `Stop` stdin distinguishes `terminationReason: "error"` (crash) from
+ * `fullyIdle: false` (background work still running), which a constant can't.
+ */
+export interface HookReportSpec {
+  /**
+   * Constant {@link WaitingReason} for this event — e.g. Codex's
+   * `PermissionRequest` is by definition a permission ask, so its hook can
+   * report `reason: "permission"` instead of relying on free-text
+   * classification downstream.
+   */
+  reason?: WaitingReason;
+  /**
+   * JS expression evaluated against the parsed stdin JSON (`j`) producing the
+   * LifecycleStatus to report. When set, it overrides the builder's
+   * positional `status` argument. Must use only single quotes and no
+   * backslashes (the script travels inside `node -e "..."`).
+   */
+  statusExpr?: string;
+  /**
+   * JS expression producing a `WaitingReason | undefined`. When set, it
+   * overrides {@link reason}. `undefined` results are dropped by
+   * `JSON.stringify`, matching {@link HookPayload.reason} optionality.
+   */
+  reasonExpr?: string;
+  /**
+   * JS expression producing the agent's working directory (empty string when
+   * absent). Default: the stdin `j?.cwd` field (Claude/Codex snake_case
+   * payloads). Antigravity instead reports `workspacePaths` (camelCase).
+   */
+  cwdExpr?: string;
+}
+
+/**
  * Generate a self-contained `node -e` command that reads stdin JSON, reads the
  * lifecycle server URL + session name from env, and POSTs a hook payload to the
  * server. Embeds the marker (+ schema version tag) as a comment + payload field
  * so the hook is unambiguously ours and its generation is detectable.
+ *
+ * The report (status/reason/cwd) is computed per {@link HookReportSpec}: a
+ * constant by default, or derived from the parsed stdin JSON via the spec's
+ * expressions for agents whose payloads carry that signal.
  *
  * URL resolution order: the port file at `portFilePath` (rewritten with the
  * current port on every extension activation — see `startLifecycleServer`'s
@@ -323,7 +371,8 @@ export function buildNodeHookCommand(
   session: string,
   marker: string,
   status: LifecycleStatus,
-  portFilePath: string
+  portFilePath: string,
+  spec: HookReportSpec = {}
 ): string {
   // Inline-escape for single-quoted JavaScript string literals inside node -e.
   const escapedUrl = hookUrl
@@ -337,11 +386,22 @@ export function buildNodeHookCommand(
   const escapedSession = session
     .replace(/\\/g, "\\\\")
     .replace(/'/g, "\\'");
+  // Report fragments. Constant path keeps the historical generated shape
+  // (`status:'finished'`, `cwd:j?.cwd||''`); the expression path splices the
+  // spec's compile-time-constant JS in, parenthesized so operator precedence
+  // can't leak into the surrounding object literal.
+  const statusFragment = spec.statusExpr ? `(${spec.statusExpr})` : `'${status}'`;
+  const reasonFragment = spec.reasonExpr
+    ? `(${spec.reasonExpr})`
+    : spec.reason
+      ? `'${spec.reason}'`
+      : "undefined";
+  const cwdFragment = spec.cwdExpr ? `(${spec.cwdExpr})||''` : "j?.cwd||''";
   // Guard first: this hook is installed globally, so it runs on *every* Stop/
   // Notification for this agent — even sessions we didn't launch. When
   // AQP_SESSION is absent (not one of ours), exit immediately: a no-op, no
   // socket, no dead-port noise.
-  return `node -e "/*${versionTag(marker)}*/if(!process.env.AQP_SESSION){process.exit(0)}const h=require('http'),fs=require('fs');let fileUrl;try{fileUrl=JSON.parse(fs.readFileSync('${escapedPortFilePath}','utf8')).url}catch(e){}const u=fileUrl||process.env.AQP_HOOK_URL||'${escapedUrl}';let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d||'{}');const b=JSON.stringify({marker:'${marker}',session:process.env.AQP_SESSION||'${escapedSession}',status:'${status}',agentName:'${marker.split(':')[1]||''}',cwd:j?.cwd||'',message:j?.message||''});const r=h.request(u,{method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(b)}});r.setTimeout(2000,()=>r.destroy());r.on('error',()=>{});r.end(b)}catch(e){}})"`;
+  return `node -e "/*${versionTag(marker)}*/if(!process.env.AQP_SESSION){process.exit(0)}const h=require('http'),fs=require('fs');let fileUrl;try{fileUrl=JSON.parse(fs.readFileSync('${escapedPortFilePath}','utf8')).url}catch(e){}const u=fileUrl||process.env.AQP_HOOK_URL||'${escapedUrl}';let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d||'{}');const b=JSON.stringify({marker:'${marker}',session:process.env.AQP_SESSION||'${escapedSession}',status:${statusFragment},agentName:'${marker.split(':')[1]||''}',cwd:${cwdFragment},reason:${reasonFragment},message:j?.message||''});const r=h.request(u,{method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(b)}});r.setTimeout(2000,()=>r.destroy());r.on('error',()=>{});r.end(b)}catch(e){}})"`;
 }
 
 /**
@@ -455,15 +515,16 @@ export function mergeCommandHooks(
         )
     );
     if (!already) {
-      // One entry per lifecycle status we care about for this event.
-      const statuses = statusesForEvent(event);
-      for (const status of statuses) {
+      // One entry per report we want this event to POST.
+      const reports = reportsForEvent(event);
+      for (const report of reports) {
         const command = buildNodeHookCommand(
           hookUrl,
           session,
           marker,
-          status,
-          portFilePath
+          report.status,
+          portFilePath,
+          report.spec ?? {}
         );
         arr.push({
           hooks: [{ type: "command", command }],
@@ -575,25 +636,212 @@ export function hasCurrentCommandHooks(
   });
 }
 
+// ---------------------------------------------------------------------------
+// Named-registry hook helpers (Antigravity)
+// ---------------------------------------------------------------------------
+
 /**
- * Map a Claude/Droid event name to the lifecycle statuses we want to report.
+ * One event wiring inside a **named-registry** hooks file (Antigravity's
+ * `hooks.json`): `{ "<hookName>": { enabled?, <Event>: [...] } }`.
+ *
+ * Two per-event array shapes, discriminated by {@link matcher}:
+ *  - **Tool events** (`PreToolUse`/`PostToolUse`) use matcher entries —
+ *    `{ matcher, hooks: [{ type, command, timeout? }] }` — the same inner
+ *    shape as the Claude schema, so {@link filterEventEntries} applies.
+ *  - **Lifecycle events** (`Stop`, `PreInvocation`, `PostInvocation`) hold
+ *    the handlers flat — `[{ type, command, timeout? }]` — with no matcher.
+ */
+export interface NamedHookEventSpec {
+  /** Antigravity event name, e.g. `"Stop"`, `"PreToolUse"`. */
+  event: string;
+  /**
+   * Tool-name regex for tool-level events. Omit for lifecycle events, where
+   * Antigravity ignores matchers and expects the flat handler shape.
+   */
+  matcher?: string;
+  /** Fallback status for the generated command (see {@link HookReportSpec}). */
+  status: LifecycleStatus;
+  /** How the generated command computes the report it POSTs. */
+  spec?: HookReportSpec;
+}
+
+/**
+ * Merge our named hook into an Antigravity-style `hooks.json`.
+ *
+ * Our entry lives under a single {@link hookName} (e.g. `"agent-quickpick"`).
+ * Any pre-existing keys of that entry are preserved — most importantly a
+ * user's `enabled: false` toggle (from agy's `/hooks disable`): an upgrade
+ * rewrites the commands but must never flip the user's toggle back on.
+ * Other named hooks in the file are untouched entirely.
+ *
+ * Same guarantees as {@link mergeCommandHooks}: idempotent, replaces stale
+ * generations of ours instead of appending beside them, and heals a
+ * partially-written entry per event.
+ */
+export function mergeNamedHooks(
+  parsedConfig: unknown,
+  hookName: string,
+  events: readonly NamedHookEventSpec[],
+  hookUrl: string,
+  session: string,
+  marker: string,
+  portFilePath: string
+): unknown {
+  const config = cloneObject(parsedConfig);
+  const entry = cloneObject(config[hookName]);
+
+  for (const ev of events) {
+    const current = buildNodeHookCommand(
+      hookUrl,
+      session,
+      marker,
+      ev.status,
+      portFilePath,
+      ev.spec ?? {}
+    );
+    const existing = Array.isArray(entry[ev.event]) ? (entry[ev.event] as unknown[]) : [];
+    if (ev.matcher !== undefined) {
+      // Matcher shape: drop stale generations of ours per entry, keep the rest.
+      const arr = filterEventEntries(existing, marker, (h) => isCurrentHook(h, marker));
+      const already = arr.some(
+        (ent) =>
+          ent &&
+          typeof ent === "object" &&
+          Array.isArray((ent as Record<string, unknown>).hooks) &&
+          ((ent as Record<string, unknown>).hooks as unknown[]).some((h) =>
+            isCurrentHook(h, marker)
+          )
+      );
+      if (!already) {
+        arr.push({ matcher: ev.matcher, hooks: [{ type: "command", command: current }] });
+      }
+      entry[ev.event] = arr;
+    } else {
+      // Flat shape: the handlers sit directly in the event array. Filter
+      // per handler (junk entries without a command pass through).
+      const arr = existing.filter(
+        (h) => !isOurHook(h, marker) || isCurrentHook(h, marker)
+      );
+      if (!arr.some((h) => isCurrentHook(h, marker))) {
+        arr.push({ type: "command", command: current });
+      }
+      entry[ev.event] = arr;
+    }
+  }
+
+  config[hookName] = entry;
+  return config;
+}
+
+/**
+ * Strip our named hook from an Antigravity-style `hooks.json`. Idempotent.
+ * Removes only commands carrying our marker — from both the matcher-entry and
+ * flat-handler shapes — leaving user handlers (even ones inside our entry)
+ * intact. Prunes events left empty, and drops our entry entirely when no
+ * events remain: an entry holding nothing but `enabled` is a toggle on a hook
+ * that no longer exists, not user content (same "absent == empty" posture the
+ * Claude-schema strip pins for wired events). Other named hooks are never
+ * touched.
+ */
+export function stripNamedHooks(
+  parsedConfig: unknown,
+  hookName: string,
+  marker: string
+): unknown {
+  const config = cloneObject(parsedConfig);
+  const entry = config[hookName];
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+    return config; // nothing shaped like ours at this key
+  }
+  const record = { ...(entry as Record<string, unknown>) };
+
+  for (const event of Object.keys(record)) {
+    const arr = record[event];
+    if (!Array.isArray(arr)) continue;
+    // Two passes, each a no-op on the other's shape: matcher entries first
+    // (filters inner hooks arrays), then flat handlers (filtered directly).
+    const afterEntries = filterEventEntries(arr, marker, () => false);
+    const stripped = afterEntries.filter((h) => !isOurHook(h, marker));
+    if (stripped.length === 0) {
+      delete record[event];
+    } else {
+      record[event] = stripped;
+    }
+  }
+
+  // Drop the entry when only non-event keys (e.g. `enabled`) remain.
+  const hasEvents = Object.keys(record).some((k) => Array.isArray(record[k]));
+  if (!hasEvents) {
+    delete config[hookName];
+  } else {
+    config[hookName] = record;
+  }
+  return config;
+}
+
+/**
+ * Check whether every wired event of our named hook carries a command written
+ * by the current {@link HOOK_SCHEMA_VERSION}. Deliberately ignores the
+ * entry's `enabled` flag: a user-disabled hook that is current must not read
+ * as stale (a rewrite would be pointless churn), while a disabled *stale* hook
+ * still reads stale — and {@link mergeNamedHooks} rewrites its commands while
+ * preserving the user's toggle.
+ */
+export function hasCurrentNamedHooks(
+  parsedConfig: unknown,
+  hookName: string,
+  marker: string,
+  events: readonly NamedHookEventSpec[]
+): boolean {
+  if (!parsedConfig || typeof parsedConfig !== "object") return false;
+  const entry = (parsedConfig as Record<string, unknown>)[hookName];
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
+  const record = entry as Record<string, unknown>;
+
+  return events.every((ev) => {
+    const arr = record[ev.event];
+    if (!Array.isArray(arr)) return false;
+    return arr.some((item) => {
+      if (!item || typeof item !== "object") return false;
+      const candidate = item as Record<string, unknown>;
+      // Flat handler: the item itself is the command hook.
+      if (typeof candidate.command === "string") {
+        return candidate.command.includes(versionTag(marker));
+      }
+      // Matcher entry: the item wraps an inner hooks array.
+      if (Array.isArray(candidate.hooks)) {
+        return (candidate.hooks as unknown[]).some((h) => isCurrentHook(h, marker));
+      }
+      return false;
+    });
+  });
+}
+
+
+/**
+ * Map a Claude/Droid/Codex event name to the reports we want it to POST.
  * `Stop` → the agent finished a turn. `Notification` → the agent needs input.
  * `UserPromptSubmit` → the user sent a new message, so the agent is working
  * again (without this, status wrongly stays "done" for the entire next turn
  * until the next Stop fires — the bar would lie while the agent is mid-work).
+ * `PermissionRequest` (Codex) → the agent wants a tool/command approved, a
+ * typed signal — so the hook reports the waiting *reason* directly instead of
+ * relying on free-text classification downstream.
  */
-function statusesForEvent(event: string): LifecycleStatus[] {
+function reportsForEvent(event: string): { status: LifecycleStatus; spec?: HookReportSpec }[] {
   switch (event) {
     case "Stop":
-      return ["finished"];
+      return [{ status: "finished" }];
     case "Notification":
-      return ["waiting"];
+      return [{ status: "waiting" }];
     case "SessionStart":
-      return ["running"];
+      return [{ status: "running" }];
     case "UserPromptSubmit":
-      return ["running"];
+      return [{ status: "running" }];
+    case "PermissionRequest":
+      return [{ status: "waiting", spec: { reason: "permission" } }];
     default:
-      return ["running"];
+      return [{ status: "running" }];
   }
 }
 

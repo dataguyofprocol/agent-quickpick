@@ -59,13 +59,15 @@ export interface ResolvedAgent {
  * Personal aliases like `claude-proxy` / `claude-glm` are intentionally NOT
  * here — they belong in the user's settings. Their SVGs are still shipped so
  * the user can reference them by filename (`claude-proxy.svg`) if they want.
+ * The same goes for `gemini` (dropped when Gemini CLI transitioned to
+ * Antigravity): `gemini.svg` remains shipped for settings-defined entries.
  */
 export const BUILTIN_AGENTS: AgentConfig[] = [
   { name: "Terminal", cmd: "", icon: "terminal.svg", color: "agentQuickpick.terminal" },
   { name: "Claude", cmd: "claude", icon: "claude.svg", color: "agentQuickpick.claude" },
   { name: "Command Code", cmd: "cmd", icon: "commandcode.svg", color: "agentQuickpick.commandcode" },
   { name: "Codex", cmd: "codex", icon: "codex.svg", color: "terminal.ansiGreen" },
-  { name: "Gemini", cmd: "gemini", icon: "gemini.svg", color: "terminal.ansiBlue" },
+  { name: "Antigravity", cmd: "agy", icon: "antigravity.svg", color: "terminal.ansiBlue" },
   { name: "Copilot", cmd: "gh copilot", icon: "copilot.svg", color: "terminal.ansiCyan" },
   { name: "OpenCode", cmd: "opencode", icon: "opencode.svg", color: "agentQuickpick.opencode" },
   { name: "Aider", cmd: "aider", icon: "aider.svg", color: "terminal.ansiRed" },

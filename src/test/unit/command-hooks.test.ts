@@ -14,7 +14,7 @@ import {
   hasCommandHooks,
   hasCurrentCommandHooks,
 } from "../../lifecycle";
-import { CLAUDE_ADAPTER, DROID_ADAPTER } from "../../lifecycle-adapters";
+import { CLAUDE_ADAPTER, DROID_ADAPTER, CODEX_ADAPTER } from "../../lifecycle-adapters";
 
 const HOOK_URL = "http://127.0.0.1:99999";
 const SESSION = "Claude";
@@ -152,6 +152,70 @@ suite("command-hook adapter symmetry (Droid)", () => {
     assert.deepStrictEqual(
       JSON.parse(JSON.stringify(twice)),
       JSON.parse(JSON.stringify(once))
+    );
+  });
+});
+
+suite("command-hook adapter symmetry (Codex)", () => {
+  const adapter = CODEX_ADAPTER;
+
+  test("install → remove on empty config", () => {
+    assertInstallRemoveSymmetry(adapter, {}, "empty");
+  });
+
+  test("install → remove on config with unrelated keys + user hooks", () => {
+    const config = {
+      model: "gpt-5.5",
+      approval_policy: "on-request",
+      hooks: {
+        Stop: [{ hooks: [{ type: "command", command: "echo user-stop" }] }],
+        PreToolUse: [{ matcher: "^Bash$", hooks: [{ type: "command", command: "echo user-tool" }] }],
+      },
+    };
+    assertInstallRemoveSymmetry(adapter, config, "codex-user-hooks");
+  });
+
+  test("install is idempotent", () => {
+    const once = adapter.mergeHooks({}, HOOK_URL, SESSION, PORT_FILE_PATH);
+    const twice = adapter.mergeHooks(once, HOOK_URL, SESSION, PORT_FILE_PATH);
+    assert.deepStrictEqual(
+      JSON.parse(JSON.stringify(twice)),
+      JSON.parse(JSON.stringify(once))
+    );
+  });
+
+  test("Codex wires Stop + PermissionRequest + UserPromptSubmit", () => {
+    const result = adapter.mergeHooks({}, HOOK_URL, SESSION, PORT_FILE_PATH) as Record<
+      string,
+      Record<string, unknown[]>
+    >;
+    assert.ok(result.hooks.Stop, "Stop event should exist");
+    assert.ok(result.hooks.PermissionRequest, "PermissionRequest event should exist");
+    assert.ok(result.hooks.UserPromptSubmit, "UserPromptSubmit event should exist");
+  });
+
+  test("PermissionRequest hook reports the typed waiting reason 'permission'", () => {
+    const result = adapter.mergeHooks({}, HOOK_URL, SESSION, PORT_FILE_PATH) as {
+      hooks: Record<string, { hooks: { command: string }[] }[]>;
+    };
+    const cmd = result.hooks.PermissionRequest[0].hooks[0].command;
+    // The reason is baked into the POSTed payload as a constant — no
+    // free-text classification needed for Codex's typed permission event.
+    assert.ok(
+      cmd.includes("reason:'permission'"),
+      `PermissionRequest command should embed reason:'permission', got: ${cmd}`
+    );
+    assert.ok(cmd.includes("status:'waiting'"), "PermissionRequest reports waiting");
+  });
+
+  test("Stop hook carries no baked reason (classification stays downstream)", () => {
+    const result = adapter.mergeHooks({}, HOOK_URL, SESSION, PORT_FILE_PATH) as {
+      hooks: Record<string, { hooks: { command: string }[] }[]>;
+    };
+    const cmd = result.hooks.Stop[0].hooks[0].command;
+    assert.ok(
+      cmd.includes("reason:undefined"),
+      "Stop command should leave the reason unset"
     );
   });
 });
