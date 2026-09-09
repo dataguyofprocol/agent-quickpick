@@ -37,6 +37,9 @@ import {
   FOCUS_URI_PATH,
   FOCUS_URI_SESSION_PARAM,
   sessionFromFocusUri,
+  shouldWritePluginFile,
+  shouldRemovePluginFile,
+  type PluginFileAdapter,
 } from "./lifecycle";
 import {
   LIFECYCLE_ADAPTERS,
@@ -45,7 +48,6 @@ import {
   getAdapter,
   isLifecycleAgent,
   isAbsoluteForPlatform,
-  resolveValidatedOpenCodeConfigDir,
 } from "./lifecycle-adapters";
 import {
   type AgentConfig,
@@ -73,23 +75,27 @@ import {
  */
 const OLD_OPENCODE_PLUGIN_MARKER = "agent-quickpick-lifecycle";
 
-// Capture OpenCode-related env vars once at module load so the rest of the
-// code uses stable constants rather than repeatedly reading `process.env`.
+// Capture the env vars that steer plugin-file agents' config dirs once at
+// module load so the rest of the code uses stable constants rather than
+// repeatedly reading `process.env`.
 const OPENCODE_CONFIG_DIR = process.env.OPENCODE_CONFIG_DIR;
 const XDG_CONFIG_HOME = process.env.XDG_CONFIG_HOME;
 const APPDATA = process.env.APPDATA;
 const LOCALAPPDATA = process.env.LOCALAPPDATA;
+const PI_CODING_AGENT_DIR = process.env.PI_CODING_AGENT_DIR;
 
 /**
- * The four OpenCode/XDG overrides as a snapshot object, fed to the pure
- * {@link resolveValidatedOpenCodeConfigDir} so config-dir resolution never
- * reads `process.env` outside module load.
+ * Those overrides as a snapshot object, fed to each plugin-file adapter's pure
+ * {@link PluginFileAdapter.resolveBaseDir} so base-dir resolution never reads
+ * `process.env` outside module load. One shared snapshot rather than one per
+ * agent: the keys don't collide, and adapters ignore what they don't use.
  */
-const OPENCODE_ENV_SNAPSHOT = {
+const PLUGIN_ENV_SNAPSHOT = {
   OPENCODE_CONFIG_DIR,
   XDG_CONFIG_HOME,
   APPDATA,
   LOCALAPPDATA,
+  PI_CODING_AGENT_DIR,
 };
 
 /** True if opencode.json's plugin[] still has our old file:// entry. */
@@ -653,6 +659,20 @@ function focusUri(extensionId: string, session: string): string {
  * once can't collide on it. Falls back to a plain write if the rename fails
  * (e.g. an exotic filesystem), since a best-effort write beats none.
  */
+/**
+ * Read a file's text, or `undefined` when it doesn't exist. Any other read
+ * failure (permissions, a directory in the way) also yields `undefined`, which
+ * the plugin-file marker guards treat as "absent" — the subsequent write or
+ * unlink then fails loudly on its own rather than being pre-judged here.
+ */
+async function readIfExists(fsPath: string): Promise<string | undefined> {
+  try {
+    return await fs.promises.readFile(fsPath, "utf8");
+  } catch {
+    return undefined;
+  }
+}
+
 let atomicWriteSeq = 0;
 async function writeFileAtomic(fsPath: string, content: string): Promise<void> {
   const tmpPath = `${fsPath}.aqp-${process.pid}-${atomicWriteSeq++}.tmp`;
@@ -964,49 +984,50 @@ export class LifecycleContext {
    }
 
   /**
-   * Resolve OpenCode's config dir once per call site group, verifying the
-   * result is absolute **here at the sink**. The resolver itself already
-   * throws on non-absolute results, but the invariant is re-asserted locally
-   * so a future refactor of the resolver can never let an env-derived
+   * Resolve a plugin-file agent's auto-load base dir, verifying the result is
+   * absolute **here at the sink**. Each adapter owns its own resolution rules
+   * (OpenCode's XDG lookup, pi's `PI_CODING_AGENT_DIR`), and each resolver
+   * already throws on a non-absolute result — but the invariant is re-asserted
+   * locally so a future refactor of any resolver can never let an env-derived
    * relative path reach the path.join → filesystem-write below.
    */
-  private opencodeConfigDir(): string {
-    const configDir = resolveValidatedOpenCodeConfigDir(
-      OPENCODE_ENV_SNAPSHOT,
+  private pluginBaseDir(adapter: PluginFileAdapter): string {
+    const baseDir = adapter.resolveBaseDir(
+      PLUGIN_ENV_SNAPSHOT,
       process.platform,
       os.homedir()
     );
-    if (!isAbsoluteForPlatform(configDir, process.platform)) {
-      throw new Error(`OpenCode config dir must be absolute: ${configDir}`);
+    if (!isAbsoluteForPlatform(baseDir, process.platform)) {
+      throw new Error(`${adapter.agentName} config dir must be absolute: ${baseDir}`);
     }
-    return configDir;
+    return baseDir;
   }
 
   /**
    * The absolute filesystem path we install/remove for an adapter — the JSON
-   * config for command-hook agents, the plugin file for plugin-file agents.
-   * Command-hook paths are home-relative; the OpenCode plugin path is relative
-   * to OpenCode's config dir, which is resolved per-platform (NOT a hardcoded
-   * `~/.config/opencode` — that's wrong on Windows and ignores
-   * `OPENCODE_CONFIG_DIR`).
+   * config for command-hook agents, the plugin/extension file for plugin-file
+   * agents. Command-hook paths are home-relative; a plugin path is relative to
+   * the base dir the adapter resolves per-platform (NOT a hardcoded
+   * `~/.config/opencode` — that's wrong on Windows and ignores the agents' own
+   * overrides).
    */
   private adapterFsPath(adapter: LifecycleAdapter): string {
     if (adapter.kind === "command-hooks") {
       return path.join(os.homedir(), adapter.configPath);
     }
-    return path.join(this.opencodeConfigDir(), adapter.pluginPath);
+    return path.join(this.pluginBaseDir(adapter), adapter.pluginPath);
   }
 
   /**
-   * A display path for the user. Command-hook adapters show `~/...`; the
-   * OpenCode plugin shows the resolved config dir (which may not be under home
-   * on Windows or when `OPENCODE_CONFIG_DIR` is set).
+   * A display path for the user. Command-hook adapters show `~/...`; a plugin
+   * file shows its resolved absolute path (which may not be under home on
+   * Windows or when the agent's config-dir override is set).
    */
   private adapterDisplayPath(adapter: LifecycleAdapter): string {
     if (adapter.kind === "command-hooks") {
       return `~/${adapter.configPath}`;
     }
-    return path.join(this.opencodeConfigDir(), adapter.pluginPath);
+    return path.join(this.pluginBaseDir(adapter), adapter.pluginPath);
   }
 
   /**
@@ -1107,7 +1128,18 @@ export class LifecycleContext {
     const portFilePath = this.portFilePath();
 
     if (adapter.kind === "plugin-file") {
-      // Always regenerated — see buildOpenCodePluginSource's doc comment.
+      // The dirs we write into are shared — pi's `extensions/` in particular is
+      // where several other tools install their own integrations — so never
+      // clobber a file at our path that isn't ours.
+      if (!shouldWritePluginFile(await readIfExists(fsPath), adapter.marker)) {
+        vscode.window.showWarningMessage(
+          `${this.adapterDisplayPath(adapter)} already exists and wasn't written by ` +
+            `Agent Quickpick — leaving it alone. Delete or rename it to enable ` +
+            `${adapter.agentName} lifecycle notifications.`
+        );
+        return;
+      }
+      // Otherwise always regenerated — see buildOpenCodePluginSource's doc.
       await fs.promises.mkdir(path.dirname(fsPath), { recursive: true });
       const source = adapter.buildSource(hookUrl, "", portFilePath);
       await writeFileAtomic(fsPath, source);
@@ -1153,11 +1185,16 @@ export class LifecycleContext {
       this.context.globalState.update(`hooks.${adapter.marker}.global`, undefined);
 
       if (adapter.kind === "plugin-file") {
+        // Only unlink a file we can prove we wrote: a same-named plugin the
+        // user (or another tool) put there is theirs to delete, not ours.
+        if (!shouldRemovePluginFile(await readIfExists(fsPath), adapter.marker)) {
+          continue;
+        }
         try {
           await fs.promises.unlink(fsPath);
           touched.push(this.adapterDisplayPath(adapter));
         } catch {
-          // not present — nothing to remove
+          // vanished between the read and the unlink — nothing to remove
         }
       } else {
         let text: string;

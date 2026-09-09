@@ -12,7 +12,7 @@ import * as path from "path";
 
 import { BUILTIN_AGENTS, ALLOWED_COLORS } from "../../agents";
 import { HOOK_SCHEMA_VERSION, mergeCommandHooks } from "../../lifecycle";
-import { LIFECYCLE_ADAPTERS } from "../../lifecycle-adapters";
+import { LIFECYCLE_ADAPTERS, isAbsoluteForPlatform } from "../../lifecycle-adapters";
 
 // out/test/unit/consistency.test.js → repo root is three levels up.
 const REPO_ROOT = path.resolve(__dirname, "..", "..", "..");
@@ -120,6 +120,51 @@ suite("consistency: lifecycle adapters ↔ built-ins", () => {
       assert.ok(
         JSON.stringify(merged).includes(`${adapter.marker}:v${HOOK_SCHEMA_VERSION}`),
         `${adapter.agentName}: merged hooks must embed the current version tag`
+      );
+    }
+  });
+});
+
+suite("consistency: plugin-file adapters", () => {
+  const HOME = { darwin: "/Users/me", linux: "/home/me", win32: "C:\\Users\\me" } as const;
+
+  test("resolveBaseDir yields an absolute dir on every platform with a bare env", () => {
+    // The install sink joins pluginPath onto this; a relative result would
+    // write the extension somewhere relative to the extension host's cwd.
+    for (const adapter of Object.values(LIFECYCLE_ADAPTERS)) {
+      if (adapter.kind !== "plugin-file") continue;
+      for (const platform of ["darwin", "linux", "win32"] as const) {
+        const dir = adapter.resolveBaseDir({}, platform, HOME[platform]);
+        assert.ok(
+          isAbsoluteForPlatform(dir, platform),
+          `${adapter.agentName} on ${platform}: "${dir}" is not absolute`
+        );
+      }
+    }
+  });
+
+  test("plugin paths are relative fragments, unique across adapters", () => {
+    const paths: string[] = [];
+    for (const adapter of Object.values(LIFECYCLE_ADAPTERS)) {
+      if (adapter.kind !== "plugin-file") continue;
+      assert.ok(
+        !adapter.pluginPath.startsWith("/") && !adapter.pluginPath.startsWith("~"),
+        `${adapter.agentName}: pluginPath must be base-dir-relative`
+      );
+      paths.push(adapter.pluginPath);
+    }
+    assert.strictEqual(new Set(paths).size, paths.length, "plugin paths must not collide");
+  });
+
+  test("generated source embeds the adapter's own marker (guard recognizes it)", () => {
+    // shouldWritePluginFile/shouldRemovePluginFile key off the marker; a source
+    // without it would make install refuse to upgrade its own previous output.
+    for (const adapter of Object.values(LIFECYCLE_ADAPTERS)) {
+      if (adapter.kind !== "plugin-file") continue;
+      const src = adapter.buildSource("http://127.0.0.1:49999", "", "/tmp/hook-server.json");
+      assert.ok(
+        src.includes(adapter.marker),
+        `${adapter.agentName}: generated source must contain its marker`
       );
     }
   });

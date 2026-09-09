@@ -1,8 +1,8 @@
 {
   "name": "agent-quickpick",
   "displayName": "Agent Quickpick",
-  "description": "Quick-pick launcher for agent CLI terminals — Claude, Opencode, Claude Proxy, Claude GLM, oh-my-pi, Droid, Command Code, and your own — opened in the editor area with their own icon and tab color.",
-  "version": "0.10.0",
+  "description": "Quick-pick launcher for agent CLI terminals — Claude, Opencode, Claude Proxy, Claude GLM, pi, oh-my-pi, Droid, Command Code, and your own — opened in the editor area with their own icon and tab color.",
+  "version": "0.11.0",
   "publisher": "dataguyofprocol",
   "license": "MIT",
   "icon": "icons/icon.png",
@@ -105,6 +105,15 @@
         }
       },
       {
+        "id": "agentQuickpick.pi",
+        "description": "pi agent terminal color",
+        "defaults": {
+          "dark": "#14B8A6",
+          "light": "#14B8A6",
+          "highContrast": "#14B8A6"
+        }
+      },
+      {
         "id": "agentQuickpick.omp",
         "description": "OMP agent terminal color",
         "defaults": {
@@ -193,7 +202,7 @@
         "agentQuickpick.lifecycleNotifications": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Show a notification when a lifecycle-aware agent (Claude Code, OpenCode, Droid) finishes a task or needs your input. Requires a **one-time global hook install** per agent (prompted automatically the first time you launch it — installed into your user-level agent config, e.g. `~/.claude/settings.json`, so it works in every repo). The hook only reports sessions launched from Agent Quickpick and no-ops elsewhere. Remove via the \"Remove Lifecycle Hooks\" command. Disable for silent operation."
+          "markdownDescription": "Show a notification when a lifecycle-aware agent (Claude Code, Codex, Antigravity, OpenCode, pi, Droid) finishes a task or needs your input. Requires a **one-time global hook install** per agent (prompted automatically the first time you launch it — installed into your user-level agent config, e.g. `~/.claude/settings.json`, so it works in every repo). The hook only reports sessions launched from Agent Quickpick and no-ops elsewhere. Remove via the \"Remove Lifecycle Hooks\" command. Disable for silent operation."
         },
         "agentQuickpick.systemNotifications": {
           "type": "string",

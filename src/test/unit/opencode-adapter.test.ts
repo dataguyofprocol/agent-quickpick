@@ -19,6 +19,7 @@ import {
   DROID_ADAPTER,
   CODEX_ADAPTER,
   ANTIGRAVITY_ADAPTER,
+  PI_ADAPTER,
 } from "../../lifecycle-adapters";
 
 const HOOK_URL = "http://127.0.0.1:99999";
@@ -42,6 +43,15 @@ suite("OpenCode adapter (plugin-file)", () => {
       "plugin/agent-quickpick-lifecycle.js"
     );
     assert.ok(adapter.pluginPath.endsWith(".js"), "must be .js for OpenCode's discovery glob");
+  });
+
+  test("exposes resolveBaseDir (the plugin-file base-dir contract)", () => {
+    assert.ok(adapter.kind === "plugin-file");
+    assert.strictEqual(
+      adapter.resolveBaseDir,
+      resolveValidatedOpenCodeConfigDir,
+      "OpenCode's base dir is its config dir"
+    );
   });
 
   test("buildSource embeds URL + marker and guards on AQP_SESSION", () => {
@@ -114,12 +124,13 @@ suite("buildOpenCodePluginSource", () => {
 });
 
 suite("adapter registry", () => {
-  test("has all five adapters", () => {
+  test("has all six adapters", () => {
     assert.ok(LIFECYCLE_ADAPTERS.Claude);
     assert.ok(LIFECYCLE_ADAPTERS.Droid);
     assert.ok(LIFECYCLE_ADAPTERS.Codex);
     assert.ok(LIFECYCLE_ADAPTERS.Antigravity);
     assert.ok(LIFECYCLE_ADAPTERS.OpenCode);
+    assert.ok(LIFECYCLE_ADAPTERS.pi);
   });
 
   test("getAdapter returns by name", () => {
@@ -128,6 +139,7 @@ suite("adapter registry", () => {
     assert.strictEqual(getAdapter("Codex"), CODEX_ADAPTER);
     assert.strictEqual(getAdapter("Antigravity"), ANTIGRAVITY_ADAPTER);
     assert.strictEqual(getAdapter("OpenCode"), OPENCODE_ADAPTER);
+    assert.strictEqual(getAdapter("pi"), PI_ADAPTER);
   });
 
   test("getAdapter returns undefined for unsupported agent", () => {
@@ -140,6 +152,10 @@ suite("adapter registry", () => {
     assert.ok(isLifecycleAgent("Codex"));
     assert.ok(isLifecycleAgent("Antigravity"));
     assert.ok(isLifecycleAgent("OpenCode"));
+    assert.ok(isLifecycleAgent("pi"));
+    // oh-my-pi is a *different* agent (`omp`) with no lifecycle adapter — the
+    // name overlap must not make it look wired.
+    assert.ok(!isLifecycleAgent("oh-my-pi"));
     assert.ok(!isLifecycleAgent("Aider"));
     assert.ok(!isLifecycleAgent("Terminal"));
   });
@@ -154,8 +170,8 @@ suite("adapter registry", () => {
       a.kind === "command-hooks" ? a.configPath : a.pluginPath
     );
     assert.strictEqual(new Set(paths).size, paths.length, "target paths must be unique");
-    // Command-hook paths are home-relative; OpenCode's plugin path is relative
-    // to its config dir. Both are relative fragments (no leading slash, no ~).
+    // Command-hook paths are home-relative; a plugin path is relative to the
+    // base dir its adapter resolves. Both are relative fragments (no leading slash, no ~).
     for (const p of paths) {
       assert.ok(!p.startsWith("/") && !p.startsWith("~"), `${p} should be a relative fragment`);
     }

@@ -198,8 +198,10 @@ function cloneObject(value: unknown): Record<string, unknown> {
  *    `node -e` command hooks. Install/remove are idempotent mirror images
  *    identified by {@link BaseAdapter.marker}, so a user editing the file in
  *    between never confuses removal.
- *  - "plugin-file" (OpenCode): drop a self-contained plugin file into the
- *    agent's auto-loaded plugin dir. Install = write file; remove = delete it.
+ *  - "plugin-file" (OpenCode, pi): drop a self-contained plugin/extension file
+ *    into a dir the agent auto-loads. Install = write file; remove = delete it.
+ *    Both are guarded by {@link BaseAdapter.marker}: a file at the target path
+ *    that isn't ours is never overwritten and never deleted.
  */
 export type AdapterKind = "command-hooks" | "plugin-file";
 
@@ -260,17 +262,30 @@ export interface CommandHookAdapter extends BaseAdapter {
 
 /**
  * An agent whose hook is a self-contained plugin file the agent auto-loads from
- * a well-known dir (OpenCode). Install writes the file; remove deletes it;
- * detection is file existence.
+ * a well-known dir (OpenCode, pi). Install writes the file; remove deletes it;
+ * detection is file existence plus {@link BaseAdapter.marker} in the content.
  */
 export interface PluginFileAdapter extends BaseAdapter {
   readonly kind: "plugin-file";
   /**
-   * Path (relative to the user's home dir) of the plugin file we write into the
-   * agent's auto-loaded plugin dir, e.g.
-   * ".config/opencode/plugin/agent-quickpick-lifecycle.js".
+   * Path of the plugin/extension file we write, **relative to the dir returned
+   * by {@link PluginFileAdapter.resolveBaseDir}** (not to the user's home dir —
+   * that's the command-hook convention) — e.g.
+   * "plugin/agent-quickpick-lifecycle.js" for OpenCode.
    */
   readonly pluginPath: string;
+  /**
+   * Resolve the agent's auto-load base dir that {@link pluginPath} is relative
+   * to, honoring the agent's own env override and verifying the result is
+   * absolute for the target platform (throws otherwise). Pure — fed an env
+   * snapshot by the caller, never reads `process.env` — so it is unit-testable
+   * per platform.
+   */
+  resolveBaseDir(
+    env: NodeJS.ProcessEnv,
+    platform: string,
+    homedir: string
+  ): string;
   /**
    * Generate the plugin file's source (embeds the hook URL as a fallback, and
    * `portFilePath` so a stale-env session can still find the current server —
@@ -280,6 +295,44 @@ export interface PluginFileAdapter extends BaseAdapter {
 }
 
 export type LifecycleAdapter = CommandHookAdapter | PluginFileAdapter;
+
+// ---------------------------------------------------------------------------
+// Plugin-file marker guard
+// ---------------------------------------------------------------------------
+
+/**
+ * True when it is safe to write our plugin file at the target path.
+ *
+ * The dirs we drop plugin files into are shared with the user and with other
+ * tools (pi's `extensions/` in particular is where herdr, cmux, and orca all
+ * install their own integrations). A file already at *our* path that lacks our
+ * {@link BaseAdapter.marker} was put there by someone else — a user's own
+ * plugin that happens to share the name, or a hand-written replacement for
+ * ours — and clobbering it silently destroys their work.
+ *
+ * @param existing file content, or `undefined` when the file doesn't exist
+ * @returns true when absent (fresh install) or when the content is ours
+ *          (regenerate); false when a foreign file is in the way.
+ */
+export function shouldWritePluginFile(
+  existing: string | undefined,
+  marker: string
+): boolean {
+  return existing === undefined || existing.includes(marker);
+}
+
+/**
+ * True when it is safe to delete our plugin file. Mirror image of
+ * {@link shouldWritePluginFile} minus the absent case: removal only ever
+ * unlinks a file we can prove we wrote, so "Remove Lifecycle Hooks" can never
+ * delete a user's own plugin that shares the path.
+ */
+export function shouldRemovePluginFile(
+  existing: string | undefined,
+  marker: string
+): boolean {
+  return existing !== undefined && existing.includes(marker);
+}
 
 // ---------------------------------------------------------------------------
 // Command-hook helpers (shared by Claude & Droid, which use the same schema)

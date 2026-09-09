@@ -39,7 +39,7 @@ No configuration needed—if the tool is on your `PATH`, Agent Quickpick detects
 | Aider | `aider` | Grok | `grok` |
 | Cody | `cody` | Kilo | `kilo` |
 | Qodo | `qodo` | oh-my-pi | `omp` |
-| Terminal | *(plain shell)* | | |
+| Terminal | *(plain shell)* | pi | `pi` |
 
 ---
 
@@ -107,9 +107,9 @@ Most developers never need to touch settings. But if you have custom scripts, pa
 
 ### Lifecycle notifications
 
-The first time you launch Claude Code, Codex, Antigravity, OpenCode, or Droid, Agent Quickpick offers to install a one-time hook so it can notify you when that agent finishes or needs input — in every repo, not just this one. The hook is scoped to sessions launched from Agent Quickpick and does nothing in terminals you open elsewhere.
+The first time you launch Claude Code, Codex, Antigravity, OpenCode, pi, or Droid, Agent Quickpick offers to install a one-time hook so it can notify you when that agent finishes or needs input — in every repo, not just this one. The hook is scoped to sessions launched from Agent Quickpick and does nothing in terminals you open elsewhere.
 
-- **Where it lives**: your user-level agent config (e.g. `~/.claude/settings.json`), merged in alongside anything already there.
+- **Where it lives**: your user-level agent config (e.g. `~/.claude/settings.json`), merged in alongside anything already there. OpenCode and pi have no hooks file, so they get a single self-contained plugin/extension file instead (`~/.pi/agent/extensions/agent-quickpick-lifecycle.js` for pi). A file already sitting at that path that Agent Quickpick didn't write is never overwritten and never deleted — you get a toast telling you so.
 - **Remove it**: run **Remove Lifecycle Hooks** from the Command Palette, or turn off `agentQuickpick.lifecycleNotifications` in settings.
 
 Notifications reach you through three channels:
@@ -119,6 +119,8 @@ Notifications reach you through three channels:
 | In-editor toast, with a **Show** button | `agentQuickpick.lifecycleNotifications` | on (master switch) |
 | Native OS notification (macOS Notification Center, Windows toast, `notify-send`) | `agentQuickpick.systemNotifications` | `always` |
 | Agent Quickpick's own sound cue | `agentQuickpick.notificationSound` | on |
+
+**pi caveat.** pi has no per-tool permission dialog, so the `⏸ blocked` badge appears when pi asks you a question (its `ask_user` tool) or an extension raises a prompt — not for tool approvals, which pi's permission mode grants without asking. Everything else (working / done / failed, notifications, click-to-focus) behaves like the other agents.
 
 The OS notification fires **every time** by default: it's the only channel that reaches you outside the editor and the only one that persists in Notification Center, while a VS Code toast is invisible when the window is behind another app or on another Space — exactly when "the agent needs you" matters. Set `whenUnfocused` if the doubled alert while you're looking at VS Code bothers you, or `off` for toasts only.
 

@@ -81,6 +81,7 @@ export const BUILTIN_AGENTS: AgentConfig[] = [
   { name: "Cody", cmd: "cody", icon: "cody.svg", color: "terminal.ansiBrightMagenta" },
   { name: "Kilo", cmd: "kilo", icon: "kilo.svg", color: "terminal.ansiBrightBlue" },
   { name: "Qodo", cmd: "qodo", icon: "qodo.svg", color: "terminal.ansiBrightGreen" },
+  { name: "pi", cmd: "pi", icon: "pi.svg", color: "agentQuickpick.pi" },
   { name: "oh-my-pi", cmd: "omp", icon: "omp.svg", color: "agentQuickpick.omp" },
 ];
 
@@ -97,6 +98,7 @@ const BUILTIN_COLOR_IDS = new Set([
   "agentQuickpick.claudeGlm",
   "agentQuickpick.commandcode",
   "agentQuickpick.opencode",
+  "agentQuickpick.pi",
   "agentQuickpick.omp",
   "agentQuickpick.droid",
   "agentQuickpick.terminal",

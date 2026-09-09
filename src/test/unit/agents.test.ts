@@ -51,9 +51,24 @@ suite("loadAgents", () => {
     // getAdapter/LIFECYCLE_ADAPTERS names must exist in the defaults, else
     // launching that agent from the picker would skip hook env injection.
     const names = new Set(loadAgents(undefined).map((a) => a.name.toLowerCase()));
-    for (const expected of ["claude", "droid", "codex", "antigravity", "opencode"]) {
+    for (const expected of ["claude", "droid", "codex", "antigravity", "opencode", "pi"]) {
       assert.ok(names.has(expected), `${expected} must be a built-in agent`);
     }
+  });
+
+  test("pi and oh-my-pi are distinct built-ins, pi immediately before it", () => {
+    // Two different CLIs: `pi` (lifecycle-aware) and oh-my-pi's `omp`
+    // (launch-only). loadAgents matches by exact lowercased name, so the
+    // overlap is harmless — but the ordering keeps oh-my-pi last, which the
+    // defaults test above asserts.
+    const agents = loadAgents(undefined);
+    const pi = agents.findIndex((a) => a.name === "pi");
+    const omp = agents.findIndex((a) => a.name === "oh-my-pi");
+    assert.ok(pi >= 0, "pi should be a default");
+    assert.ok(omp >= 0, "oh-my-pi should be a default");
+    assert.strictEqual(omp, pi + 1, "pi should sit directly before oh-my-pi");
+    assert.strictEqual(agents[pi].cmd, "pi");
+    assert.strictEqual(agents[omp].cmd, "omp");
   });
 
   test("user override merges by name", () => {

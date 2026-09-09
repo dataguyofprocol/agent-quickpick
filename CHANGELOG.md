@@ -4,6 +4,20 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] — 2026-09-08
+
+### Added
+- **`pi` built-in launcher** (`@earendil-works/pi-coding-agent`, command `pi`) — own icon, teal tab color, install detection like every other CLI. Distinct from the existing `oh-my-pi` (`omp`) built-in; both ship, neither shadows the other.
+- **Lifecycle awareness for pi.** pi now reports working / done / blocked / crashed into the status bar, sessions picker, toasts, OS notifications, and click-to-focus. pi has no hooks file, so the install writes one self-contained ESM extension to `~/.pi/agent/extensions/agent-quickpick-lifecycle.js` (honoring `PI_CODING_AGENT_DIR`), which pi auto-loads. Same prompt-once flow and the same **Remove Lifecycle Hooks** command as the JSON-hook agents.
+  - Status comes from `agent_settled` (not `agent_end`, which is followed by retries and auto-compaction), with `agent_end` as the boundary only until the first `agent_settled` proves the event exists.
+  - `blocked` comes from depth-counted `ui_prompt_start`/`ui_prompt_end` plus pi's own `ask_user` tool. pi's permission mode approves tool calls without a dialog, so tool approvals never show `⏸` — documented in the README.
+  - The extension is inert outside Agent Quickpick: it reports only when `AQP_SESSION` is injected *and* `ctx.mode === "tui"`, so `pi -p`, `--mode rpc`, and `--mode json` runs post nothing. No timers, sockets, or watchers are started at load.
+
+### Fixed
+- **Plugin/extension files are never clobbered.** Installing OpenCode or pi lifecycle support now refuses to overwrite a file at its target path that Agent Quickpick didn't write (identified by a marker comment), and **Remove Lifecycle Hooks** refuses to delete one — a toast says which file was left alone. Previously the OpenCode plugin was written unconditionally. pi's `extensions/` directory is shared with several other tools (herdr, cmux, orca), which makes this load-bearing.
+
+---
+
 ## [0.10.0] — 2026-08-24
 
 ### Added
