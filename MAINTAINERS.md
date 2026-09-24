@@ -8,10 +8,36 @@ npm run compile     # tsc
 npm run watch       # tsc -w
 npm run test:unit   # fast tier: plain mocha, no editor window, ~3s (320+ tests)
 npm test            # full gate: unit tier + host tier in a real editor window
+npm run bench       # micro-benchmarks over the pure modules (see "Benchmarking")
 npm run package     # builds the .vsix
 ```
 
 CI runs on every push across Ubuntu, macOS, and Windows — build, test, package, upload the vsix as an artifact.
+
+## Benchmarking
+
+`npm run bench` runs the micro-benchmark suite over the vscode-free data plane (hook merge/strip on realistic ~8 KB and stressed ~500 KB configs, `hasCommandHooks`/`hasCurrentCommandHooks`, frecency sort/write at 100–10k entries, the exit-status poller at 10–500 terminals, a live hook-server POST round-trip, `loadAgents`, status-bar render). It prints median/p95 per op and a rough heap-per-op (via `--expose-gc`), and saves a JSON snapshot under `bench-results/` (gitignored). A recorded baseline table lives in README.md ("Performance baseline") — refresh it there when a deliberate perf change lands.
+
+The A/B workflow for a refactor:
+
+```bash
+npm run bench                                                # on the old code → snapshot A
+# ...apply the refactor...
+npm run bench                                                # → snapshot B
+npm run bench -- --compare bench-results/<A>.json bench-results/<B>.json
+```
+
+Reading the output honestly:
+
+- **Same machine, same background load.** Run-to-run jitter on identical code is a few percent (up to ~10% for the I/O-bound server scenario), which is why `--compare` only flags |Δmedian| ≥ 10% — deltas below that are noise, not signal.
+- **It's a measuring tool, not a gate.** There are deliberately no perf-budget assertions and no CI wiring. The bench answers "did refactor X move the number"; it does not find problems. Every perf/memory win in the v0.12.x overhaul came from code reading, not measurement — that stays the primary lens.
+- **Only bench what has a reason to get slower.** Scenarios exist for per-keystroke / per-hook-event / per-poll-tick paths and user-controlled file sizes. A scenario without a refactor in mind is a scoreboard entry, not a signal.
+
+What the bench **cannot** cover, and how to measure it manually when it matters:
+
+- **First-command activation** (probe prewarm, port file write, poller start): Command Palette → "Developer: Startup Timings" → Extension Activation Timings, in a window where the extension activates on first command.
+- **PATH-probe burst** (~20 `command -v` spawns on first open): time `resolveAgents` ad hoc, or profile the extension host (Developer: Take Extension Host Profile) while opening the quick pick cold.
+- **Real memory leaks** (timers/terminals retained past dispose): these live in the vscode-coupled half and show up as retention across a long-lived window, not as heap-per-op. The extension host profile's heap snapshot diff is the tool; the last real leaks (launch-delay timer, unpruned frecency) were found by reading, and that pattern held across the whole audit.
 
 ## Source layout
 
@@ -20,6 +46,7 @@ CI runs on every push across Ubuntu, macOS, and Windows — build, test, package
 - `src/lifecycle.ts` — lifecycle awareness shared core: types, the `LifecycleAdapter` interface, pure functions (JSON config helpers, command-hook merge/strip, status-bar rendering, notification logic, notify/sound command builders), and the VS Code-coupled HTTP server + exit-status poller.
 - `src/lifecycle-adapters.ts` — one adapter per lifecycle-aware agent: Claude Code, Droid, Codex (shared Claude-schema command hooks), Antigravity (named-registry command hooks in `~/.gemini/config/hooks.json`), and OpenCode (file-based ESM plugin). Registry + lookup helpers.
 - `src/test/unit/*.test.ts` — unit tier (plain mocha, no host): merge/detection/frecency logic, adapter symmetry, status-bar/notification rendering, **behavioral** suites that execute the generated hook command and OpenCode plugin against a real localhost server, the exit-status poller, a seeded fuzz suite, and repo-consistency drift guards (colors ↔ package.json, icons ↔ BUILTIN_AGENTS).
+- `src/test/bench/*.ts` — manually-run micro-benchmarks over the same vscode-free modules (see "Benchmarking"). Not collected by either test tier.
 - `src/test/suite/*.test.ts` — host tier (@vscode/test-electron): icon/color resolution, `LifecycleContext` orchestration, activation smoke tests.
 - `icons/*.svg` — one brand icon per agent. House style: 24×24 viewBox, `rx=6` rounded background, white glyph on brand fill.
 - `package.json` — `contributes.configuration` (settings schema), `contributes.colors` (8 custom theme colors), command + keybinding.

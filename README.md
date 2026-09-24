@@ -150,6 +150,32 @@ The **Agent** item shows a live count of running agents **for the active repo on
 
 ---
 
+## Performance baseline
+
+The repo carries a micro-benchmark suite over the extension's data-plane hot paths — `npm run bench` (details in [MAINTAINERS.md](./MAINTAINERS.md)). Baseline captured **2026-09-24** on Apple silicon (darwin arm64, Node v26.8.1), extension v0.12.2:
+
+| Scenario | median | p95 | ops/s | heap/op |
+| --- | ---: | ---: | ---: | ---: |
+| hooks: install pipeline (~8 KB config) | 13.9 µs | 17.2 µs | 72.1k/s | 13 B |
+| hooks: install pipeline (~500 KB config) | 579.8 µs | 626.3 µs | 1.7k/s | 1 B |
+| hooks: hasCommandHooks (~500 KB config) | 65.3 µs | 81.7 µs | 15.3k/s | 0 B |
+| hooks: hasCurrentCommandHooks (~500 KB config) | 9.3 µs | 11.3 µs | 107.1k/s | 7 B |
+| hooks: stripCommandHooks (~500 KB config) | 29.3 µs | 38.4 µs | 34.1k/s | 91 B |
+| frecency: sortByFrecency (100 entries) | 6.0 µs | 7.4 µs | 165.5k/s | 2 B |
+| frecency: sortByFrecency (1,000 entries) | 95.4 µs | 167.5 µs | 10.5k/s | 0 B |
+| frecency: sortByFrecency (10,000 entries) | 1.08 ms | 1.28 ms | 929/s | 0 B |
+| frecency: recordLaunch (10k-entry map) | 341.7 µs | 496.4 µs | 2.9k/s | 5 B |
+| poller: pollExitStatuses (10 terminals) | 666 ns | 792 ns | 1.50M/s | 0 B |
+| poller: pollExitStatuses (100 terminals) | 7.5 µs | 8.2 µs | 133.3k/s | 0 B |
+| poller: pollExitStatuses (500 terminals) | 42.0 µs | 51.0 µs | 23.8k/s | 0 B |
+| server: hook POST round-trip | 71.6 µs | 115.3 µs | 14.0k/s | 1.0 KB |
+| agents: loadAgents (20 built-ins + 200 user) | 16.6 µs | 19.3 µs | 60.2k/s | 0 B |
+| render: statusBar text+tooltip (500 sessions) | 68.1 µs | 82.4 µs | 14.7k/s | 5 B |
+
+Reading it: per-op times for the median iteration of each scenario; `heap/op` is retained-after-GC delta, so transient garbage shows as ~0. These numbers are machine- and load-specific — they exist to track **our own refactors over time**, not as absolutes. To A/B a change: `npm run bench` before and after, then `npm run bench -- --compare <old-snapshot> <new-snapshot>` (snapshots land in the gitignored `bench-results/` dir). Back-to-back runs of identical code jitter a few percent; treat deltas under 10% as noise.
+
+---
+
 ## License & Notes
 
 - License: [MIT](./LICENSE) *(Icons are stylized original artwork)*

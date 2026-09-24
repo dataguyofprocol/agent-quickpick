@@ -2,7 +2,7 @@
   "name": "agent-quickpick",
   "displayName": "Agent Quickpick",
   "description": "Quick-pick launcher for agent CLI terminals — Claude, Opencode, Claude Proxy, Claude GLM, pi, oh-my-pi, Droid, Command Code, and your own — opened in the editor area with their own icon and tab color.",
-  "version": "0.12.1",
+  "version": "0.12.2",
   "publisher": "dataguyofprocol",
   "license": "MIT",
   "icon": "icons/icon.png",
@@ -46,7 +46,9 @@
     "test:unit": "mocha --ui tdd --timeout 10000 --exit out/test/unit/*.test.js",
     "pretest:unit": "npm run compile",
     "pretest": "npm run compile",
-    "test": "npm run test:unit && node ./out/test/runTest.js"
+    "test": "npm run test:unit && node ./out/test/runTest.js",
+    "bench": "node --expose-gc out/test/bench/run.js",
+    "prebench": "npm run compile"
   },
   "contributes": {
     "icons": {

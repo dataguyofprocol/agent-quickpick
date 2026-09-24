@@ -10,6 +10,10 @@ out/
 
 # Test runner
 .vscode-test/
+
+# Bench snapshots (npm run bench)
+bench-results/
+
 .zcode/
 .commandcode/
 .opencode/
