@@ -48,6 +48,7 @@ import {
   mergeNamedHooks,
   stripNamedHooks,
   hasCurrentNamedHooks,
+  HOOK_TIMEOUT_MS,
 } from "./lifecycle";
 
 // ---------------------------------------------------------------------------
@@ -376,24 +377,15 @@ export function resolveValidatedOpenCodeConfigDir(
  * `require` is not defined in ESM under Node and would throw at module load,
  * permanently blacklisting the plugin for the session.
  */
-export function buildOpenCodePluginSource(
-  hookUrl: string,
-  // Intentionally unused: see the JSDoc above.
-  _session: string,
-  portFilePath: string
-): string {
-  // Embed the marker so the file is unambiguously ours. Always regenerated
-  // unconditionally on install/auto-upgrade (see installHook in extension.ts),
-  // so there's no separate version tag to detect here — the file is simply
-  // always current.
-  return `// ${OPENCODE_PLUGIN_MARKER}
-// Installed by Agent Quickpick. Remove via the "Remove Lifecycle Hooks" command
-// or by deleting this file.
-const HOOK_URL = ${JSON.stringify(hookUrl)};
-const PORT_FILE_PATH = ${JSON.stringify(portFilePath)};
-const MARKER = ${JSON.stringify(OPENCODE_PLUGIN_MARKER)};
 
-async function post(status, reason) {
+/**
+ * The self-contained `post(status, reason)` body shared verbatim by the two
+ * generated plugin files (OpenCode + pi) — one canonical copy so the two
+ * surfaces can't drift. Interpolates the agent name and the shared
+ * {@link HOOK_TIMEOUT_MS} socket timeout.
+ */
+function postSource(agentName: string): string {
+  return `async function post(status, reason) {
   try {
     // Only report for sessions Agent Quickpick launched (env injected).
     const session = process.env.AQP_SESSION;
@@ -401,7 +393,9 @@ async function post(status, reason) {
     // 'reason' is undefined for every status except waiting, where it says WHY
     // the agent is blocked (permission vs question) so the UI can say "wants a
     // command approved" instead of a generic "blocked".
-    const body = JSON.stringify({ marker: MARKER, session, status, reason, agentName: "OpenCode", cwd: process.cwd() });
+    const body = JSON.stringify({ marker: MARKER, session, status, reason, agentName: ${JSON.stringify(
+      agentName
+    )}, cwd: process.cwd() });
     // Resolution order: the port file (rewritten with the current port on
     // every extension activation) → the frozen per-terminal env var (stale
     // after a restart) → the URL baked in at install time. Checking the file
@@ -429,12 +423,32 @@ async function post(status, reason) {
           res.on("end", resolve);
         }
       );
-      r.setTimeout(2000, () => { r.destroy(); resolve(undefined); });
+      r.setTimeout(${HOOK_TIMEOUT_MS}, () => { r.destroy(); resolve(undefined); });
       r.on("error", () => resolve(undefined));
       r.end(body);
     });
   } catch {}
+}`;
 }
+
+export function buildOpenCodePluginSource(
+  hookUrl: string,
+  // Intentionally unused: see the JSDoc above.
+  _session: string,
+  portFilePath: string
+): string {
+  // Embed the marker so the file is unambiguously ours. Always regenerated
+  // unconditionally on install/auto-upgrade (see installHook in extension.ts),
+  // so there's no separate version tag to detect here — the file is simply
+  // always current.
+  return `// ${OPENCODE_PLUGIN_MARKER}
+// Installed by Agent Quickpick. Remove via the "Remove Lifecycle Hooks" command
+// or by deleting this file.
+const HOOK_URL = ${JSON.stringify(hookUrl)};
+const PORT_FILE_PATH = ${JSON.stringify(portFilePath)};
+const MARKER = ${JSON.stringify(OPENCODE_PLUGIN_MARKER)};
+
+${postSource("OpenCode")}
 
 export const AgentQuickpickLifecyclePlugin = async () => ({
   event: async ({ event }) => {
@@ -583,41 +597,7 @@ const MARKER = ${JSON.stringify(PI_EXTENSION_MARKER)};
 // same tool into a first-class permission request).
 const ASK_TOOL_NAMES = new Set(["ask_user", "ask_user_question", "ask"]);
 
-async function post(status, reason) {
-  try {
-    // Only report for sessions Agent Quickpick launched (env injected).
-    const session = process.env.AQP_SESSION;
-    if (!session) return;
-    const body = JSON.stringify({ marker: MARKER, session, status, reason, agentName: "pi", cwd: process.cwd() });
-    // Port file → frozen per-terminal env var → URL baked in at install time.
-    // Same order and rationale as the OpenCode plugin.
-    const fs = await import("node:fs");
-    let fileUrl;
-    try {
-      fileUrl = JSON.parse(fs.readFileSync(PORT_FILE_PATH, "utf8")).url;
-    } catch {}
-    const u = new URL(fileUrl || process.env.AQP_HOOK_URL || HOOK_URL);
-    const lib = await (u.protocol === "https:" ? import("node:https") : import("node:http"));
-    await new Promise((resolve) => {
-      const r = lib.request(
-        {
-          hostname: u.hostname,
-          port: u.port,
-          path: u.pathname,
-          method: "POST",
-          headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) },
-        },
-        (res) => {
-          res.on("data", () => {});
-          res.on("end", resolve);
-        }
-      );
-      r.setTimeout(2000, () => { r.destroy(); resolve(undefined); });
-      r.on("error", () => resolve(undefined));
-      r.end(body);
-    });
-  } catch {}
-}
+${postSource("pi")}
 
 export default function (pi) {
   // Nothing here may start a timer, socket, or watcher: pi loads every

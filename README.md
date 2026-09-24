@@ -21,6 +21,7 @@ Built by a dev for devs who run CLI coding agents in VS Code (or Cursor, Windsur
 - **Clean & non-intrusive**: Agents not found on your system stay hidden by default so your picker stays clean—click the eye icon in the title bar anytime to reveal them.
 - **Know when an agent needs you**: Lifecycle hooks (installed once per agent) fire native OS notifications, in-editor toasts with a **Show** button, and a sound cue when an agent finishes a task or is waiting for input — even when VS Code is behind another app or on another Space. Works in **every repo**, not just this one.
 - **Live session status at a glance**: The running-sessions picker shows a real-time status badge per agent — `●` working, `⏸` blocked (waiting on you), `✓` done, `✗` failed — so you instantly see which agents are blocked waiting on your input. Double-tap `⌘⇧A` to jump to any of them.
+- **Rename tabs from that same picker**: Select a running session and click the edit icon in the picker title bar — or press **R** while the filter is empty — to rename its terminal tab. Lifecycle status, notifications, status-bar counts, and click-to-focus keep working after the rename.
 
 ---
 
@@ -135,8 +136,9 @@ One binding does both jobs — no second shortcut to remember, and nothing of VS
 | Default shortcut | Action |
 | --- | --- |
 | `⌘⇧A` / `Ctrl+Shift+A` | Open the agent launcher |
-| `⌘⇧A` twice (within 250ms) | Open running agent sessions — pick one to focus it |
+| `⌘⇧A` twice | Open running agent sessions — pick one to focus it |
 | `⌘⇧A` again while the launcher is open | Switch to running agent sessions |
+| `R` (in running sessions, empty filter) | Rename the selected agent tab |
 
 Double-tap with nothing running just re-opens the launcher, so the gesture is never a dead end. `Agent Quickpick: Running Sessions` is also on the status-bar item and in the Command Palette.
 

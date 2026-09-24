@@ -132,6 +132,10 @@ export type FrecencyMap = Record<string, FrecencyEntry>;
 
 const FRECENCY_KEY = "frecency.v1";
 const FRECENCY_HALF_LIFE_DAYS = 10;
+// Prune horizon: entries unused for 180+ days are dropped on the next write.
+// 180d ≈ 18 half-lives, so a pruned entry's score had already decayed to
+// ~2^-18 of its count — removing it can't change sort order in practice.
+const FRECENCY_MAX_AGE_MS = 180 * 86_400_000;
 
 /**
  * Pure score function. `now` is injected so tests don't depend on wall clock.
@@ -166,9 +170,30 @@ export function readFrecency(state: MementoLike): FrecencyMap {
   return {};
 }
 
+/**
+ * Drop entries older than the prune horizon (or with a missing/garbage entry),
+ * in place. `now` is injected so tests don't depend on the wall clock.
+ */
+export function pruneFrecency(
+  map: FrecencyMap,
+  now: number,
+  maxAgeMs = FRECENCY_MAX_AGE_MS
+): FrecencyMap {
+  for (const key of Object.keys(map)) {
+    const entry = map[key];
+    if (!entry || now - entry.t > maxAgeMs) {
+      delete map[key];
+    }
+  }
+  return map;
+}
+
 /** Increment an agent's launch count + last-used timestamp in globalState. */
 export function recordLaunch(state: MementoLike, name: string, now: number): void {
   const map = readFrecency(state);
+  // Prune on write so stale entries (agents removed or renamed since) stop
+  // persisting — and syncing — forever.
+  pruneFrecency(map, now);
   const key = name.toLowerCase();
   const prev = map[key];
   map[key] = { c: (prev?.c ?? 0) + 1, t: now };
@@ -258,6 +283,9 @@ interface InstallCacheEntry {
   ts: number;
 }
 const INSTALL_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+// A hung PATH entry (e.g. a dead network mount) must resolve "not installed"
+// after 5s, not stall install detection — and qp.busy — indefinitely.
+const PROBE_TIMEOUT_MS = 5000;
 const installCache = new Map<string, InstallCacheEntry>();
 
 /** A safe binary name: letters, digits, dash, underscore, dot, plus only. */
@@ -291,15 +319,22 @@ export async function isCmdInstalled(cmd: string, launcher?: string): Promise<bo
   }
   const cached = installCache.get(binary);
   const now = Date.now();
-  if (cached && now - cached.ts < INSTALL_CACHE_TTL_MS) {
-    return cached.installed;
+  if (cached) {
+    if (now - cached.ts < INSTALL_CACHE_TTL_MS) {
+      return cached.installed;
+    }
+    // Expired — evict so removed binaries don't linger in the map for the
+    // rest of the window session.
+    installCache.delete(binary);
   }
   const cmdName = process.platform === "win32" ? "where" : "command";
   const args = process.platform === "win32" ? [binary] : ["-v", binary];
   return new Promise<boolean>((resolve) => {
-    execFile(cmdName, args, (error) => {
+    execFile(cmdName, args, { timeout: PROBE_TIMEOUT_MS }, (error) => {
       const installed = !error;
-      installCache.set(binary, { installed, ts: now });
+      // Stamp after the probe: a slow or timed-out probe must not shorten
+      // this entry's TTL by writing a pre-probe timestamp.
+      installCache.set(binary, { installed, ts: Date.now() });
       resolve(installed);
     });
   });
@@ -310,11 +345,6 @@ export async function isCmdInstalled(cmd: string, launcher?: string): Promise<bo
  * activate() whenever any `agentQuickpick.*` setting changes, and by tests.
  */
 export function clearInstallCache(): void {
-  installCache.clear();
-}
-
-/** Reset the install cache. Exposed for tests (alias of clearInstallCache). */
-export function _resetInstallCacheForTests(): void {
   installCache.clear();
 }
 
@@ -391,26 +421,4 @@ export function baseTerminalName(name: string): string {
  */
 export function isSessionTerminal(terminalName: string, agentNames: Set<string>): boolean {
   return agentNames.has(baseTerminalName(terminalName).toLowerCase());
-}
-
-/**
- * Given a set of live terminal names, return those that look like agent
- * sessions we launched — as `{ name, agentName }` pairs (base name = agent
- * name). Pure + host-free so it's unit-testable; used by
- * `LifecycleContext.seedFromOpenTerminals` to re-adopt agent sessions
- * into the in-memory Map after a window reload, so hooks/notifications keep
- * working without a manual relaunch.
- */
-export function matchSessionTerminals(
-  names: readonly string[],
-  agentNames: Set<string>
-): { name: string; agentName: string }[] {
-  const matched: { name: string; agentName: string }[] = [];
-  for (const name of names) {
-    const agentName = baseTerminalName(name);
-    if (agentNames.has(agentName.toLowerCase())) {
-      matched.push({ name, agentName });
-    }
-  }
-  return matched;
 }

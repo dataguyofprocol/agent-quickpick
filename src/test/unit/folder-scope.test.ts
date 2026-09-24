@@ -6,21 +6,11 @@
 import * as assert from "assert";
 
 import {
-  type SessionState,
   folderOf,
   folderBasename,
   filterSessionsByFolder,
 } from "../../lifecycle";
-
-function makeState(
-  name: string,
-  agentName: string,
-  status: SessionState["status"],
-  changedAt = Date.now(),
-  extra: Partial<Pick<SessionState, "cwd" | "launchedInFolder">> = {}
-): SessionState {
-  return { name, agentName, status, changedAt, ...extra };
-}
+import { makeState } from "./helpers";
 
 suite("folderOf", () => {
   test("prefers cwd over launchedInFolder", () => {

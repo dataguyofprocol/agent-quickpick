@@ -16,6 +16,8 @@ import {
   statusBarText,
   statusBarTooltip,
   filterSessionsByFolder,
+  folderOf,
+  folderBasename,
   STATUS_LABEL,
   STATUS_GLYPH,
   shouldNotify,
@@ -37,6 +39,7 @@ import {
   FOCUS_URI_PATH,
   FOCUS_URI_SESSION_PARAM,
   sessionFromFocusUri,
+  terminalCreationName,
   shouldWritePluginFile,
   shouldRemovePluginFile,
   type PluginFileAdapter,
@@ -60,11 +63,11 @@ import {
   sortByFrecency,
   isCmdInstalled,
   isSessionTerminal,
+  baseTerminalName,
   clearInstallCache,
   launchText,
   launchDelay,
   uniqueTerminalName,
-  matchSessionTerminals,
 } from "./agents";
 
 /**
@@ -244,6 +247,13 @@ function activeWorkspaceFolder(): string | undefined {
   return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 }
 
+/**
+ * Launch-delay timers currently pending (see launchAgent). Tracked so
+ * deactivation can clear them — a deferred sendText firing after the
+ * extension unloads would hit a disposed terminal.
+ */
+const pendingLaunchTimers = new Set<NodeJS.Timeout>();
+
 /** Create + show a terminal for the given resolved agent. */
 async function launchAgent(
   agent: ResolvedAgent,
@@ -251,7 +261,14 @@ async function launchAgent(
   delayMs = 0,
   lifecycle?: LifecycleContext
 ): Promise<vscode.Terminal> {
-  const openNames = vscode.window.terminals.map((t) => t.name);
+  // Include both the current display name and the frozen creation name:
+  // after a user renames "Claude" to "My Claude", the original session key
+  // (used by hooks) must not be handed to a new launch, or the two sessions
+  // would collide in the lifecycle map.
+  const openNames = vscode.window.terminals.flatMap((t) => [
+    t.name,
+    terminalCreationName(t),
+  ]);
   const tabName = uniqueTerminalName(agent.name, openNames);
 
   // Inject lifecycle env for supported agents so their hooks can call back to
@@ -284,13 +301,15 @@ async function launchAgent(
       // Defer sendText so other extensions' terminal-startup injections
       // (venv activation, direnv, conda, …) land in the bare shell first.
       // Guard: the terminal may be disposed during the window.
-      setTimeout(() => {
+      const timer: NodeJS.Timeout = setTimeout(() => {
+        pendingLaunchTimers.delete(timer);
         try {
           terminal.sendText(text);
         } catch {
           // terminal disposed during delay — non-fatal
         }
       }, delay);
+      pendingLaunchTimers.add(timer);
     } else {
       terminal.sendText(text);
     }
@@ -317,6 +336,26 @@ async function launchAgent(
 
 type LauncherItem = vscode.QuickPickItem & { agent?: ResolvedAgent };
 
+type SessionItem = vscode.QuickPickItem & {
+  terminal?: vscode.Terminal;
+  launch?: boolean;
+};
+
+/** Currently-open sessions picker, if any (used by the R rename shortcut). */
+let sessionsPick: vscode.QuickPick<SessionItem> | undefined;
+
+/** Last session with a terminal selected in the sessions picker. */
+let lastActiveSessionItem: SessionItem | undefined;
+
+/** Guards against double-triggering the rename prompt from R. */
+let renameInFlight = false;
+
+/** Title-bar action for the sessions picker (always visible, mouse friendly). */
+const RENAME_SESSION_BUTTON: vscode.QuickInputButton = {
+  iconPath: new vscode.ThemeIcon("edit"),
+  tooltip: "Rename selected tab (R)",
+};
+
 /**
  * The currently-open launcher quick pick, if any. A second ⌘⇧A press while
  * it's open swaps it for the sessions picker (see the agentQuickpick.open
@@ -325,20 +364,107 @@ type LauncherItem = vscode.QuickPickItem & { agent?: ResolvedAgent };
 let launcherPick: vscode.QuickPick<LauncherItem> | undefined;
 
 /**
- * Double-tap window: a second press of the agentQuickpick.open command within
- * this interval opens the sessions picker instead of the agent launcher.
- * Matches OS double-click timing. Detection is keyed to the command, not the
- * physical key, so it follows whatever key the user rebound the command to.
- * Hardcoded per design (no user setting).
+ * Prompt for a new tab name. Rejects empty names and names already used by
+ * another terminal (including its frozen creation name, which is the lifecycle
+ * session key and must stay unique).
  */
-const OPEN_DOUBLE_TAP_MS = 250;
-let openTapTimer: NodeJS.Timeout | undefined;
-let lastOpenTapAt = 0;
+async function promptRenameTerminal(
+  terminal: vscode.Terminal
+): Promise<string | undefined> {
+  const current = terminal.name;
+  const value = await vscode.window.showInputBox({
+    title: "Rename terminal tab",
+    prompt: "Enter a new name for this agent tab",
+    value: current,
+    valueSelection: [0, current.length],
+    validateInput: (input) => {
+      const name = input.trim();
+      if (name.length === 0) {
+        return "Tab name cannot be empty.";
+      }
+      if (name === terminal.name) {
+        return undefined;
+      }
+      const taken = vscode.window.terminals.some((t) => {
+        if (t === terminal) {
+          return false;
+        }
+        return t.name === name || terminalCreationName(t) === name;
+      });
+      return taken ? "Another terminal already uses that name." : undefined;
+    },
+  });
+  if (value === undefined) {
+    return undefined;
+  }
+  const name = value.trim();
+  return name.length > 0 && name !== terminal.name ? name : undefined;
+}
 
 /**
- * Show a quick pick of currently-running agent terminals (matched by name) and
- * focus the chosen one. When nothing is running, falls through to the launcher.
- * When sessions exist, a trailing "Launch new agent…" item re-enters the launcher.
+ * Prompt, validate, and perform a tab rename. Returns the new name on success.
+ */
+async function renameTerminalTab(
+  terminal: vscode.Terminal
+): Promise<string | undefined> {
+  const oldName = terminal.name;
+  const newName = await promptRenameTerminal(terminal);
+  if (newName === undefined) {
+    return undefined;
+  }
+  try {
+    terminal.show();
+    await vscode.commands.executeCommand(
+      "workbench.action.terminal.renameWithArg",
+      { name: newName }
+    );
+  } catch {
+    void vscode.window.showErrorMessage(
+      "Could not rename the terminal tab. Your editor may not support this command."
+    );
+    return undefined;
+  }
+  lifecycleCtx?.renameSession(
+    oldName,
+    newName,
+    terminalCreationName(terminal)
+  );
+  return newName;
+}
+
+/**
+ * Rename the session currently selected in the sessions picker. Invoked by the
+ * picker title-bar button and the R keybinding.
+ */
+async function renameSelectedSession(): Promise<void> {
+  if (renameInFlight) {
+    return;
+  }
+  const qp = sessionsPick;
+  const selected = qp?.selectedItems[0];
+  const item = selected ?? lastActiveSessionItem;
+  if (qp === undefined || item?.terminal === undefined) {
+    return;
+  }
+  renameInFlight = true;
+  try {
+    const newName = await renameTerminalTab(item.terminal);
+    if (newName !== undefined && sessionsPick === qp) {
+      item.label = newName;
+      qp.items = [...qp.items];
+    }
+  } finally {
+    renameInFlight = false;
+  }
+}
+
+/**
+ * Show a quick pick of currently-running agent terminals and focus the chosen
+ * one. A title-bar edit button renames the selected session, and pressing R
+ * does the same when the filter is empty. Matching uses the terminal's frozen
+ * creation name, so tabs the user renamed are still listed. When nothing is
+ * running, falls through to the launcher. When sessions exist, a trailing
+ * "Launch new agent…" item re-enters the launcher.
  */
 async function runSessions(context: vscode.ExtensionContext): Promise<void> {
   const config = vscode.workspace.getConfiguration("agentQuickpick");
@@ -351,11 +477,11 @@ async function runSessions(context: vscode.ExtensionContext): Promise<void> {
   // folder are excluded when an active folder is set.
   const folder = activeWorkspaceFolder();
   const sessions = vscode.window.terminals.filter((t) => {
-    if (!isSessionTerminal(t.name, agentNames)) {
+    if (isSessionTerminal(terminalCreationName(t), agentNames) === false) {
       return false;
     }
     const state = lifecycleCtx?.getSessionState(t.name);
-    if (!state) {
+    if (state === undefined) {
       return folder === undefined;
     }
     const attributed = state.cwd ?? state.launchedInFolder;
@@ -366,8 +492,6 @@ async function runSessions(context: vscode.ExtensionContext): Promise<void> {
   if (sessions.length === 0) {
     return runLauncher(context);
   }
-
-  type Item = vscode.QuickPickItem & { terminal?: vscode.Terminal; launch?: boolean };
 
   const iconOf = (t: vscode.Terminal): vscode.IconPath | undefined => {
     const opts = t.creationOptions as vscode.TerminalOptions;
@@ -386,7 +510,7 @@ async function runSessions(context: vscode.ExtensionContext): Promise<void> {
   const statusOf = (t: vscode.Terminal): LifecycleStatus =>
     lifecycleCtx?.getSessionState(t.name)?.status ?? "running";
 
-  const items: Item[] = [...sessions]
+  const items: SessionItem[] = [...sessions]
     .sort((a, b) => order[statusOf(a)] - order[statusOf(b)])
     .map((t) => {
       const state = lifecycleCtx?.getSessionState(t.name);
@@ -406,16 +530,107 @@ async function runSessions(context: vscode.ExtensionContext): Promise<void> {
   items.push({ label: "", kind: vscode.QuickPickItemKind.Separator });
   items.push({ label: "$(add) Launch new agent…", launch: true });
 
-  const choice = await vscode.window.showQuickPick(items, {
-    placeHolder: "Switch to a running agent",
+  const qp = vscode.window.createQuickPick<SessionItem>();
+  qp.title = "Running agents";
+  qp.placeholder = "Switch to a running agent — press R to rename";
+  qp.items = items;
+  qp.buttons = [RENAME_SESSION_BUTTON];
+  sessionsPick = qp;
+  lastActiveSessionItem = items[0];
+  void vscode.commands.executeCommand(
+    "setContext",
+    "agentQuickpick.sessionsOpen",
+    true
+  );
+  // Last value sent for sessionsInputEmpty, so onDidChangeValue only pays the
+  // setContext round-trip when emptiness actually changes — not per keystroke.
+  let inputEmpty = true;
+  void vscode.commands.executeCommand(
+    "setContext",
+    "agentQuickpick.sessionsInputEmpty",
+    true
+  );
+  void vscode.commands.executeCommand(
+    "setContext",
+    "agentQuickpick.sessionsRenameAvailable",
+    lastActiveSessionItem?.terminal !== undefined
+  );
+
+  qp.onDidChangeActive((activeItems) => {
+    if (activeItems.length > 0) {
+      lastActiveSessionItem = activeItems[0];
+    }
+    void vscode.commands.executeCommand(
+      "setContext",
+      "agentQuickpick.sessionsRenameAvailable",
+      lastActiveSessionItem?.terminal !== undefined
+    );
   });
-  if (!choice) {
-    return;
-  }
-  if (choice.launch) {
-    return runLauncher(context);
-  }
-  choice.terminal?.show();
+
+  qp.onDidChangeValue((value) => {
+    const empty = value.length === 0;
+    if (empty !== inputEmpty) {
+      inputEmpty = empty;
+      void vscode.commands.executeCommand(
+        "setContext",
+        "agentQuickpick.sessionsInputEmpty",
+        empty
+      );
+    }
+    if (
+      value.trim().toLowerCase() === "r" &&
+      lastActiveSessionItem?.terminal !== undefined
+    ) {
+      qp.value = "";
+      void renameSelectedSession();
+    }
+  });
+
+  qp.onDidHide(() => {
+    if (sessionsPick === qp) {
+      sessionsPick = undefined;
+      lastActiveSessionItem = undefined;
+      void vscode.commands.executeCommand(
+        "setContext",
+        "agentQuickpick.sessionsOpen",
+        false
+      );
+      void vscode.commands.executeCommand(
+        "setContext",
+        "agentQuickpick.sessionsInputEmpty",
+        false
+      );
+      inputEmpty = false;
+      void vscode.commands.executeCommand(
+        "setContext",
+        "agentQuickpick.sessionsRenameAvailable",
+        false
+      );
+    }
+    qp.dispose();
+  });
+
+  qp.onDidAccept(() => {
+    const choice = qp.selectedItems[0];
+    if (choice === undefined) {
+      return;
+    }
+    if (choice.launch === true) {
+      qp.hide();
+      void runLauncher(context);
+      return;
+    }
+    choice.terminal?.show();
+    qp.hide();
+  });
+
+  qp.onDidTriggerButton((button) => {
+    if (button === RENAME_SESSION_BUTTON) {
+      void renameSelectedSession();
+    }
+  });
+
+  qp.show();
 }
 
 /** The launcher quick pick — pick an agent, open a terminal for it. */
@@ -524,12 +739,6 @@ async function runLauncher(context: vscode.ExtensionContext): Promise<void> {
     render();
 }
 
-/**
- * Lifecycle awareness context — owns the HTTP server, session-state map, status
- * bar updates, notification toasts, and the prompt-once-globally hook install
- * flow. Created in activate(); passed to launchAgent via a module-level ref so
- * existing call sites don't all need an extra parameter.
- */
 /**
  * Spawn a {@link SpawnSpec} without waiting on it and without ever throwing.
  *
@@ -649,17 +858,6 @@ function focusUri(extensionId: string, session: string): string {
 }
 
 /**
- * Write a file by writing a sibling temp file and renaming it over the target.
- * The rename is atomic on the same filesystem, so a crash or a concurrent reader
- * never sees a half-written file — this matters because the targets are the
- * user's own `~/.claude/settings.json` / `~/.factory/settings.json`, which a
- * truncated write would break for every agent session, not just ours.
- *
- * The temp name is unique per call (pid + counter) so two windows installing at
- * once can't collide on it. Falls back to a plain write if the rename fails
- * (e.g. an exotic filesystem), since a best-effort write beats none.
- */
-/**
  * Read a file's text, or `undefined` when it doesn't exist. Any other read
  * failure (permissions, a directory in the way) also yields `undefined`, which
  * the plugin-file marker guards treat as "absent" — the subsequent write or
@@ -674,6 +872,17 @@ async function readIfExists(fsPath: string): Promise<string | undefined> {
 }
 
 let atomicWriteSeq = 0;
+/**
+ * Write a file by writing a sibling temp file and renaming it over the target.
+ * The rename is atomic on the same filesystem, so a crash or a concurrent reader
+ * never sees a half-written file — this matters because the targets are the
+ * user's own `~/.claude/settings.json` / `~/.factory/settings.json`, which a
+ * truncated write would break for every agent session, not just ours.
+ *
+ * The temp name is unique per call (pid + counter) so two windows installing at
+ * once can't collide on it. Falls back to a plain write if the rename fails
+ * (e.g. an exotic filesystem), since a best-effort write beats none.
+ */
 async function writeFileAtomic(fsPath: string, content: string): Promise<void> {
   const tmpPath = `${fsPath}.aqp-${process.pid}-${atomicWriteSeq++}.tmp`;
   try {
@@ -685,6 +894,21 @@ async function writeFileAtomic(fsPath: string, content: string): Promise<void> {
   }
 }
 
+/** Lowercased names of the configured agents — the poller's match set. */
+function configuredAgentNames(): Set<string> {
+  return new Set(
+    loadAgents(
+      vscode.workspace.getConfiguration("agentQuickpick").get("agents")
+    ).map((a) => a.name.toLowerCase())
+  );
+}
+
+/**
+ * Lifecycle awareness context — owns the HTTP server, session-state map, status
+ * bar updates, notification toasts, and the prompt-once-globally hook install
+ * flow. Created in activate(); passed to launchAgent via a module-level ref so
+ * existing call sites don't all need an extra parameter.
+ */
 export class LifecycleContext {
   /**
    * Resolves to the bound server URL once the socket is listening. The port
@@ -693,11 +917,26 @@ export class LifecycleContext {
    */
   private readonly serverUrlPromise: Promise<string>;
   private readonly sessions = new Map<string, SessionState>();
+  /**
+   * Current terminal display name → lifecycle session key (the original
+   * `AQP_SESSION` name baked into the terminal's env at creation). Hooks keep
+   * reporting the original name forever, so renames must not move the map key;
+   * this alias lets the UI/poller find the session by its current tab name.
+   */
+  private readonly sessionAliases = new Map<string, string>();
   private readonly statusItem: vscode.StatusBarItem;
   private readonly context: vscode.ExtensionContext;
   private readonly server: { url: Promise<string>; dispose: () => void };
   private readonly pollTimer: NodeJS.Timeout;
   private readonly closeDisposable: vscode.Disposable;
+  /** Disposes the agentQuickpick.agents subscription created in the constructor. */
+  private readonly agentsConfigDisposable: vscode.Disposable;
+  /**
+   * Lowercased names of the configured agents — the exit poller's match set.
+   * Captured once here and refreshed by agentsConfigDisposable on config
+   * change, instead of being recomputed on every 3s tick.
+   */
+  private agentNames: Set<string>;
 
   constructor(context: vscode.ExtensionContext, statusItem: vscode.StatusBarItem) {
     this.context = context;
@@ -730,34 +969,45 @@ export class LifecycleContext {
         // Server failed to bind — nothing to persist.
       });
 
+    this.agentNames = configuredAgentNames();
+
     // Universal fallback: poll exit statuses every 3s for agents whose process
     // has exited (detects finished/failed even without hooks). The agent set is
-    // recomputed each tick so a runtime config change (adding a new agent entry)
-    // is picked up without a window reload — matching the live-config behavior
-    // the onDidChangeConfiguration handler elsewhere promises.
+    // captured above and refreshed on agentQuickpick.agents changes (see
+    // agentsConfigDisposable below), so a runtime config change is still picked
+    // up without a window reload — without re-reading config every tick. With
+    // no terminals open there is nothing to poll, so skip the work entirely.
     this.pollTimer = setInterval(() => {
-      const agentNames = new Set(
-        loadAgents(
-          vscode.workspace.getConfiguration("agentQuickpick").get("agents")
-        ).map((a) => a.name.toLowerCase())
-      );
+      if (vscode.window.terminals.length === 0) {
+        return;
+      }
       const exited = pollExitStatuses(
         vscode.window.terminals,
         this.sessions,
-        agentNames
+        this.agentNames
       );
       let changed = false;
       const now = Date.now();
       for (const [name, exit] of exited) {
-        const prev = this.sessions.get(name);
+        // `pollExitStatuses` keys by the current display name. Resolve back to
+        // the stable session key (the creation-time hook env name) so a renamed
+        // tab updates the same session rather than creating a duplicate.
+        const terminal = vscode.window.terminals.find((t) => t.name === name);
+        const session = terminal
+          ? this.sessionKeyForTerminal(terminal)
+          : name;
+        const prev = this.sessions.get(session);
         // Monotonic-failed: never demote a terminal failure (e.g. a late Stop
         // hook arriving after a non-zero exit must not flip failed → finished).
         if (prev && prev.status === "failed" && exit.status === "finished") {
           continue;
         }
-        this.sessions.set(name, {
-          name,
-          agentName: prev?.agentName ?? name.replace(/ \(\d+\)$/, ""),
+        const fallbackAgentName = terminal
+          ? baseTerminalName(terminalCreationName(terminal))
+          : baseTerminalName(name);
+        this.sessions.set(session, {
+          name: prev?.name ?? terminal?.name ?? session,
+          agentName: prev?.agentName ?? fallbackAgentName,
           status: exit.status,
           changedAt: now,
           exitCode: exit.exitCode,
@@ -767,7 +1017,7 @@ export class LifecycleContext {
           ...(prev?.cwd ? { cwd: prev.cwd } : {}),
         });
         changed = true;
-        this.maybeNotify(name, exit.status, exit.exitCode);
+        this.maybeNotify(session, exit.status, exit.exitCode);
       }
       if (changed) {
         this.refreshStatusBar();
@@ -778,8 +1028,24 @@ export class LifecycleContext {
     // doesn't drift upward over a long session. Without this, entries were
     // never removed (no eviction existed).
     this.closeDisposable = vscode.window.onDidCloseTerminal((t) => {
-      if (this.sessions.delete(t.name)) {
+      const session = this.sessionKeyForTerminal(t);
+      const deleted = this.sessions.delete(session);
+      this.sessionAliases.delete(t.name);
+      for (const [displayName, key] of this.sessionAliases) {
+        if (key === session) {
+          this.sessionAliases.delete(displayName);
+        }
+      }
+      if (deleted) {
         this.refreshStatusBar();
+      }
+    });
+
+    // Keep the poller's agent set live across settings edits (adding/removing
+    // agent entries), matching what the old per-tick recompute provided.
+    this.agentsConfigDisposable = vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration("agentQuickpick.agents")) {
+        this.agentNames = configuredAgentNames();
       }
     });
   }
@@ -796,16 +1062,33 @@ export class LifecycleContext {
     * hook arrives carrying `cwd`.
     */
    seedFromOpenTerminals(agentNames: Set<string>): void {
-     const matches = matchSessionTerminals(
-       vscode.window.terminals.map((t) => t.name),
-       agentNames
-     );
      const now = Date.now();
      let changed = false;
-     for (const { name, agentName } of matches) {
-       if (!this.sessions.has(name)) {
-         this.sessions.set(name, { name, agentName, status: "unknown", changedAt: now });
+     for (const t of vscode.window.terminals) {
+       const session = terminalCreationName(t);
+       if (isSessionTerminal(session, agentNames) === false) {
+         continue;
+       }
+       const agentName = baseTerminalName(session);
+       const existing = this.sessions.get(session);
+       if (existing === undefined) {
+         this.sessions.set(session, {
+           name: t.name,
+           agentName,
+           status: "unknown",
+           changedAt: now,
+         });
          changed = true;
+       } else if (existing.name !== t.name) {
+         this.sessions.set(session, { ...existing, name: t.name });
+         changed = true;
+       }
+       if (t.name !== session) {
+         if (this.sessionAliases.get(t.name) !== session) {
+           this.sessionAliases.set(t.name, session);
+         }
+       } else {
+         this.sessionAliases.delete(t.name);
        }
      }
      if (changed) {
@@ -836,8 +1119,12 @@ export class LifecycleContext {
        return;
      }
      const status = payload.status as LifecycleStatus;
-     const prev = this.sessions.get(payload.session);
-     if (!prev) {
+     // Hooks always report the creation-time session name baked into
+     // AQP_SESSION. A user rename only changes the display name in our alias
+     // map, so resolve back to the stable key before looking up state.
+     const session = this.sessionAliases.get(payload.session) ?? payload.session;
+     const prev = this.sessions.get(session);
+     if (prev === undefined) {
        return; // unknown session — ignore (e.g. from a different window)
      }
      // Monotonic-failed: a terminal failure (non-zero exit) must not be
@@ -858,7 +1145,7 @@ export class LifecycleContext {
        status === "waiting"
          ? payload.reason ?? classifyWaitingMessage(payload.message)
          : undefined;
-     this.sessions.set(payload.session, {
+     this.sessions.set(session, {
        ...prev,
        status,
        changedAt: Date.now(),
@@ -866,7 +1153,7 @@ export class LifecycleContext {
        waitingReason,
      });
      this.refreshStatusBar();
-     this.maybeNotify(payload.session, status, undefined, waitingReason);
+     this.maybeNotify(session, status, undefined, waitingReason);
    }
 
   /**
@@ -889,11 +1176,18 @@ export class LifecycleContext {
     const soundOn = config.get<boolean>("notificationSound", true);
 
     const activeTerminal = vscode.window.activeTerminal;
-    const isActive = !!activeTerminal && activeTerminal.name === session;
+    const isActive =
+      activeTerminal !== undefined &&
+      this.sessionKeyForTerminal(activeTerminal) === session;
 
     const sessionState = this.sessions.get(session);
     const agentName = sessionState?.agentName ?? session;
-    const repo = vscode.workspace.workspaceFolders?.[0]?.name;
+    // Attribute the toast to the session's own folder (matching the status
+    // bar/tooltip), not workspaceFolders[0]: in a multi-root window a session
+    // in folder B must not toast "· folder-a", and a re-adopted session with
+    // no known folder omits the repo suffix.
+    const sessionFolder = sessionState ? folderOf(sessionState) : undefined;
+    const repo = sessionFolder ? folderBasename(sessionFolder) : undefined;
     const msg = notificationMessage(agentName, status, repo, exitCode, waitingReason);
     if (!msg) {
       return;
@@ -905,7 +1199,7 @@ export class LifecycleContext {
         : (t: string, ...a: string[]) => vscode.window.showInformationMessage(t, ...a);
       show(msg.text, msg.action).then((choice) => {
         if (choice === msg.action) {
-          const terminal = vscode.window.terminals.find((t) => t.name === session);
+          const terminal = this.findTerminalForSession(session);
           terminal?.show();
         }
       });
@@ -962,9 +1256,66 @@ export class LifecycleContext {
     fireAndForget(soundPlayCommand(process.platform, soundPath));
   }
 
-  /** Look up a tracked session's state by terminal/tab name. */
+  /**
+   * Look up a tracked session's state by the terminal's current display name.
+   * A renamed tab is resolved through {@link sessionAliases} back to its stable
+   * creation-time session key.
+   */
   getSessionState(tabName: string): SessionState | undefined {
-    return this.sessions.get(tabName);
+    const direct = this.sessions.get(this.sessionAliases.get(tabName) ?? tabName);
+    if (direct !== undefined) {
+      return direct;
+    }
+    // Fallback for a terminal renamed outside our picker (or if an alias was
+    // lost mid-session): derive the stable key from the live terminal itself.
+    const terminal = vscode.window.terminals.find((t) => t.name === tabName);
+    if (terminal === undefined) {
+      return undefined;
+    }
+    return this.sessions.get(this.sessionKeyForTerminal(terminal));
+  }
+
+  /**
+   * Record a user-driven tab rename. The lifecycle map key stays the terminal's
+   * original AQP_SESSION name (hooks keep reporting that forever); the new
+   * display name is aliased to it.
+   */
+  renameSession(
+    oldDisplayName: string,
+    newDisplayName: string,
+    stableSessionName: string
+  ): void {
+    this.sessionAliases.delete(oldDisplayName);
+    if (stableSessionName === newDisplayName) {
+      // Renaming back to the original creation-time name restores a direct
+      // sessions.get(name) hit, so no alias is needed.
+      this.sessionAliases.delete(newDisplayName);
+    } else {
+      this.sessionAliases.set(newDisplayName, stableSessionName);
+    }
+    const existing = this.sessions.get(stableSessionName);
+    if (existing !== undefined && existing.name !== newDisplayName) {
+      this.sessions.set(stableSessionName, {
+        ...existing,
+        name: newDisplayName,
+      });
+      this.refreshStatusBar();
+    }
+  }
+
+  /** Find the live terminal backing a stable session key (even after rename). */
+  findTerminalForSession(session: string): vscode.Terminal | undefined {
+    return vscode.window.terminals.find(
+      (t) => this.sessionKeyForTerminal(t) === session
+    );
+  }
+
+  /**
+   * The stable lifecycle session key for a terminal: its current alias if
+   * renamed, otherwise its frozen creation name.
+   */
+  private sessionKeyForTerminal(t: vscode.Terminal): string {
+    return this.sessionAliases.get(t.name) ?? terminalCreationName(t);
   }
 
   /**
@@ -1283,6 +1634,7 @@ export class LifecycleContext {
   dispose(): void {
     clearInterval(this.pollTimer);
     this.closeDisposable.dispose();
+    this.agentsConfigDisposable.dispose();
     this.server.dispose();
   }
 }
@@ -1333,7 +1685,15 @@ export function activate(context: vscode.ExtensionContext) {
   // Lifecycle awareness — HTTP server for agent hooks, session tracking, live
   // status-bar counts, and notification toasts. Owns its own poll timer.
   lifecycleCtx = new LifecycleContext(context, statusItem);
-  context.subscriptions.push({ dispose: () => lifecycleCtx?.dispose() });
+  // Null the module ref on dispose so post-dispose command calls (e.g.
+  // agentQuickpick.removeHooks) take their `if (!lifecycleCtx)` no-op path
+  // instead of routing into a disposed context.
+  context.subscriptions.push({
+    dispose: () => {
+      lifecycleCtx?.dispose();
+      lifecycleCtx = undefined;
+    },
+  });
 
   // Re-adopt any agent terminals that survived a window reload, so lifecycle
   // hooks/notifications keep working without a manual relaunch. Without this,
@@ -1346,6 +1706,19 @@ export function activate(context: vscode.ExtensionContext) {
       ).map((a) => a.name.toLowerCase())
     )
   );
+
+  // Fire-and-forget: warm the install-detection cache so the first launcher
+  // open doesn't pay the ~20-probe PATH burst behind a busy spinner. The
+  // resolved list is discarded — only the cached probe results matter.
+  resolveAgents(
+    loadAgents(vscode.workspace.getConfiguration("agentQuickpick").get("agents")),
+    context.extensionUri,
+    vscode.workspace
+      .getConfiguration("agentQuickpick")
+      .get<boolean>("detectInstalled", true)
+  ).catch(() => {
+    // prewarm failures are non-fatal — the picker re-probes on open
+  });
 
   // Clicking an OS notification opens `<scheme>://<extension-id>/focus?session=…`,
   // which lands here. The banner is posted with `-open <focusUri>` (we avoid
@@ -1365,9 +1738,7 @@ export function activate(context: vscode.ExtensionContext) {
           // malformed query — fall through to the picker below
         }
         if (session) {
-          const terminal = vscode.window.terminals.find(
-            (t) => t.name === session
-          );
+          const terminal = lifecycleCtx?.findTerminalForSession(session);
           if (terminal) {
             // Reveal + focus this agent's terminal. The URI open has already
             // raised the window; this puts the right terminal on top of it.
@@ -1415,40 +1786,38 @@ export function activate(context: vscode.ExtensionContext) {
   });
 
   context.subscriptions.push(
-    // Clear any pending single-tap timer on deactivate so a deferred
-    // launcher launch can't fire after the extension unloads.
-    { dispose: () => { if (openTapTimer) { clearTimeout(openTapTimer); } } }
+    // Clear pending launch-delay timers on deactivate so a deferred sendText
+    // can't fire at a disposed terminal after the extension unloads.
+    {
+      dispose: () => {
+        for (const timer of pendingLaunchTimers) {
+          clearTimeout(timer);
+        }
+        pendingLaunchTimers.clear();
+      },
+    }
   );
 
   context.subscriptions.push(
     vscode.commands.registerCommand("agentQuickpick.open", () => {
-      // If the launcher is already open, a fresh press swaps it for the
-      // sessions picker immediately (preserves the pre-double-tap swap UX;
-      // orthogonal to the timer because the launcher only opens after the
-      // 250ms window has elapsed).
+      // Press 1 opens the launcher instantly; press 2 while it's still open
+      // (the old double-tap outcome) swaps it for the sessions picker.
       if (launcherPick) {
         const qp = launcherPick;
         launcherPick = undefined;
         qp.hide();
         return runSessions(context);
       }
-      // Double-tap detection: a second press within OPEN_DOUBLE_TAP_MS
-      // cancels the pending launcher launch and opens the sessions picker.
-      const now = Date.now();
-      if (openTapTimer && now - lastOpenTapAt < OPEN_DOUBLE_TAP_MS) {
-        clearTimeout(openTapTimer);
-        openTapTimer = undefined;
-        return runSessions(context);
-      }
-      // Single tap: defer the launcher by the tap window so a quick second
-      // press can promote this tap into a sessions-picker open.
-      lastOpenTapAt = now;
-      openTapTimer = setTimeout(() => {
-        openTapTimer = undefined;
-        void runLauncher(context);
-      }, OPEN_DOUBLE_TAP_MS);
+      void runLauncher(context);
     }),
     vscode.commands.registerCommand("agentQuickpick.sessions", () => runSessions(context)),
+    vscode.commands.registerCommand("agentQuickpick.renameSession", async () => {
+      if (sessionsPick === undefined) {
+        await runSessions(context);
+        return;
+      }
+      await renameSelectedSession();
+    }),
     vscode.commands.registerCommand("agentQuickpick.removeHooks", async () => {
       if (!lifecycleCtx) {
         return;

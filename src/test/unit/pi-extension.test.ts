@@ -20,6 +20,7 @@ import { pathToFileURL } from "url";
 
 import { buildPiExtensionSource } from "../../lifecycle-adapters";
 import { startLifecycleServer, type HookPayload } from "../../lifecycle";
+import { waitFor } from "./helpers";
 
 type Handler = (event: unknown, ctx: unknown) => void;
 
@@ -37,21 +38,6 @@ interface Fixture {
   payloads: HookPayload[];
   handlers: Map<string, Handler[]>;
   dispose: () => Promise<void>;
-}
-
-/** Wait until predicate() is truthy, polling every 25ms up to `ms`. */
-function waitFor(predicate: () => boolean, ms = 3000, what = "condition"): Promise<void> {
-  const start = Date.now();
-  return new Promise((resolve, reject) => {
-    const tick = () => {
-      if (predicate()) return resolve();
-      if (Date.now() - start > ms) {
-        return reject(new Error(`timed out after ${ms}ms waiting for ${what}`));
-      }
-      setTimeout(tick, 25);
-    };
-    tick();
-  });
 }
 
 /** Settle time for "assert nothing was POSTed" cases. */

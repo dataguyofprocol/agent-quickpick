@@ -5,7 +5,6 @@
 import * as assert from "assert";
 
 import {
-  type SessionState,
   type LifecycleStatus,
   countByStatus,
   statusBarText,
@@ -13,16 +12,7 @@ import {
   STATUS_LABEL,
   STATUS_GLYPH,
 } from "../../lifecycle";
-
-function makeState(
-  name: string,
-  agentName: string,
-  status: LifecycleStatus,
-  changedAt = Date.now(),
-  extra: Partial<Pick<SessionState, "cwd" | "launchedInFolder">> = {}
-): SessionState {
-  return { name, agentName, status, changedAt, ...extra };
-}
+import { makeState } from "./helpers";
 
 /** Build a complete status-counts record (all keys, zero by default). */
 function counts(

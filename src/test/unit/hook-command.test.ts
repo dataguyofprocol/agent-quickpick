@@ -10,7 +10,6 @@ import * as assert from "assert";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { execFile } from "child_process";
 import * as net from "net";
 
 import {
@@ -18,71 +17,10 @@ import {
   startLifecycleServer,
   type HookPayload,
 } from "../../lifecycle";
+import { runHook, waitFor } from "./helpers";
 
 const MARKER = "agentQuickpick:claude";
 const STATUS = "finished";
-
-/**
- * The command is always `node -e "<script>"`. Peel off the wrapper so we can
- * exec the script directly, without a shell, on every platform.
- */
-function extractScript(cmd: string): string {
-  const prefix = 'node -e "';
-  assert.ok(cmd.startsWith(prefix), `command should start with ${prefix}`);
-  assert.ok(cmd.endsWith('"'), "command should end with a double quote");
-  return cmd.slice(prefix.length, -1);
-}
-
-interface RunResult {
-  code: number | null;
-  stderr: string;
-}
-
-/** Execute a generated hook command with the given env + stdin JSON. */
-function runHook(
-  cmd: string,
-  opts: { env?: Record<string, string>; stdin?: string } = {}
-): Promise<RunResult> {
-  // Hermetic: strip any ambient AQP_* env this test process inherited (e.g.
-  // the tests running inside a terminal agent-quickpick itself launched —
-  // AQP_SESSION/AQP_HOOK_URL there belong to the editor session, not us).
-  const env: Record<string, string> = { ...process.env } as Record<string, string>;
-  delete env.AQP_SESSION;
-  delete env.AQP_HOOK_URL;
-  Object.assign(env, opts.env);
-  return new Promise((resolve, reject) => {
-    const child = execFile(
-      process.execPath, // the same node running the tests
-      ["-e", extractScript(cmd)],
-      { env },
-      (_error, _stdout, stderr) => {
-        // The callback fires on exit whatever the code; exitCode is the truth.
-        resolve({ code: child.exitCode, stderr: String(stderr) });
-      }
-    );
-    child.on("error", reject);
-    if (opts.stdin !== undefined) {
-      child.stdin?.end(opts.stdin);
-    } else {
-      child.stdin?.end();
-    }
-  });
-}
-
-/** Wait until predicate() is truthy, polling every 25ms up to `ms`. */
-function waitFor(predicate: () => boolean, ms = 3000, what = "condition"): Promise<void> {
-  const start = Date.now();
-  return new Promise((resolve, reject) => {
-    const tick = () => {
-      if (predicate()) return resolve();
-      if (Date.now() - start > ms) {
-        return reject(new Error(`timed out after ${ms}ms waiting for ${what}`));
-      }
-      setTimeout(tick, 25);
-    };
-    tick();
-  });
-}
 
 suite("generated hook command (executed)", () => {
   test("no AQP_SESSION → no-op: no POST, exit 0", async () => {

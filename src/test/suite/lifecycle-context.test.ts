@@ -128,6 +128,20 @@ suite("LifecycleContext", () => {
     }
   });
 
+  test("renameSession aliases a new display name back to the hook session key", async () => {
+    const fx = await makeContext();
+    try {
+      fx.ctx.trackSession("Claude", "Claude", "/repo/alpha");
+      fx.ctx.renameSession("Claude", "My Claude", "Claude");
+      const state = fx.ctx.getSessionState("My Claude");
+      assert.ok(state, "renamed display name should resolve");
+      assert.strictEqual(state?.agentName, "Claude");
+      assert.strictEqual(state?.launchedInFolder, "/repo/alpha");
+    } finally {
+      await fx.dispose();
+    }
+  });
+
   test("hook POST drives the session state end-to-end (the real pipeline)", async () => {
     const fx = await makeContext();
     try {

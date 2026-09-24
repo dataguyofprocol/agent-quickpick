@@ -7,7 +7,6 @@
  */
 
 import * as assert from "assert";
-import { execFile } from "child_process";
 
 import {
   startLifecycleServer,
@@ -17,6 +16,7 @@ import {
   ANTIGRAVITY_ADAPTER,
   CODEX_ADAPTER,
 } from "../../lifecycle-adapters";
+import { runHook, waitFor } from "./helpers";
 
 const HOOK_URL = "http://127.0.0.1:49998";
 const PORT_FILE = "/nonexistent/port-file.json";
@@ -50,57 +50,6 @@ function commandContaining(cmds: string[], needle: string): string {
   const found = cmds.find((c) => c.includes(needle));
   assert.ok(found, `expected a command containing ${needle}`);
   return found;
-}
-
-function extractScript(cmd: string): string {
-  const prefix = 'node -e "';
-  assert.ok(cmd.startsWith(prefix), `command should start with ${prefix}`);
-  assert.ok(cmd.endsWith('"'), "command should end with a double quote");
-  return cmd.slice(prefix.length, -1);
-}
-
-interface RunResult {
-  code: number | null;
-  stderr: string;
-}
-
-function runHook(
-  cmd: string,
-  opts: { env?: Record<string, string>; stdin?: string } = {}
-): Promise<RunResult> {
-  // Hermetic: strip ambient AQP_* env inherited from the test process (tests
-  // may run inside a terminal agent-quickpick launched — those vars belong
-  // to the editor session, not to us).
-  const env: Record<string, string> = { ...process.env } as Record<string, string>;
-  delete env.AQP_SESSION;
-  delete env.AQP_HOOK_URL;
-  Object.assign(env, opts.env);
-  return new Promise((resolve, reject) => {
-    const child = execFile(
-      process.execPath,
-      ["-e", extractScript(cmd)],
-      { env },
-      () => {
-        resolve({ code: child.exitCode, stderr: "" });
-      }
-    );
-    child.on("error", reject);
-    child.stdin?.end(opts.stdin ?? "");
-  });
-}
-
-function waitFor(predicate: () => boolean, ms = 3000, what = "condition"): Promise<void> {
-  const start = Date.now();
-  return new Promise((resolve, reject) => {
-    const tick = () => {
-      if (predicate()) return resolve();
-      if (Date.now() - start > ms) {
-        return reject(new Error(`timed out after ${ms}ms waiting for ${what}`));
-      }
-      setTimeout(tick, 25);
-    };
-    tick();
-  });
 }
 
 /** Run one command against a fresh server and return the single POST it made. */

@@ -47,14 +47,16 @@ suite("activate", () => {
   });
 
   test("agentQuickpick.open executes without rejecting (smoke)", async () => {
-    // Single press: defers the launcher by the 250ms double-tap window.
+    // Single press: opens the launcher immediately (install detection still
+    // resolves async behind its busy spinner).
     await vscode.commands.executeCommand("agentQuickpick.open");
     await new Promise((r) => setTimeout(r, 400));
     assert.ok(true);
   });
 
   test("double-tap agentQuickpick.open routes to the sessions picker (no throw)", async () => {
-    // Two rapid presses cancel the pending launcher and open sessions instead.
+    // Two rapid presses: the second swaps the already-open launcher for the
+    // sessions picker.
     await vscode.commands.executeCommand("agentQuickpick.open");
     await vscode.commands.executeCommand("agentQuickpick.open");
     await new Promise((r) => setTimeout(r, 400));

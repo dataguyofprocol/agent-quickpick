@@ -2,7 +2,7 @@
   "name": "agent-quickpick",
   "displayName": "Agent Quickpick",
   "description": "Quick-pick launcher for agent CLI terminals — Claude, Opencode, Claude Proxy, Claude GLM, pi, oh-my-pi, Droid, Command Code, and your own — opened in the editor area with their own icon and tab color.",
-  "version": "0.11.0",
+  "version": "0.12.1",
   "publisher": "dataguyofprocol",
   "license": "MIT",
   "icon": "icons/icon.png",
@@ -197,7 +197,7 @@
         "agentQuickpick.showStatusBar": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Show an **Agent** button in the status bar that opens the quick pick. Disable to keep the status bar uncluttered and rely on the keybinding (default `Cmd/Ctrl+Shift+A` to launch; press twice within 250ms for running sessions). Rebind it to any key via the **Change Agent Quickpick Shortcut** command or VS Code's Keyboard Shortcuts editor (`Cmd/Ctrl+K Cmd/Ctrl+S`, search `agentQuickpick.open`); the double-tap gesture follows whatever key you bind."
+          "markdownDescription": "Show an **Agent** button in the status bar that opens the quick pick. Disable to keep the status bar uncluttered and rely on the keybinding (default `Cmd/Ctrl+Shift+A` to launch; press twice for running sessions — the second press swaps the open launcher). Rebind it to any key via the **Change Agent Quickpick Shortcut** command or VS Code's Keyboard Shortcuts editor (`Cmd/Ctrl+K Cmd/Ctrl+S`, search `agentQuickpick.open`); the double-tap gesture follows whatever key you bind."
         },
         "agentQuickpick.lifecycleNotifications": {
           "type": "boolean",
@@ -247,6 +247,10 @@
       {
         "command": "agentQuickpick.openKeybindings",
         "title": "Change Agent Quickpick Shortcut"
+      },
+      {
+        "command": "agentQuickpick.renameSession",
+        "title": "Rename Running Agent Tab"
       }
     ],
     "keybindings": [
@@ -254,6 +258,12 @@
         "command": "agentQuickpick.open",
         "key": "ctrl+shift+a",
         "mac": "cmd+shift+a"
+      },
+      {
+        "command": "agentQuickpick.renameSession",
+        "key": "r",
+        "mac": "r",
+        "when": "agentQuickpick.sessionsOpen && agentQuickpick.sessionsInputEmpty && agentQuickpick.sessionsRenameAvailable"
       }
     ]
   },

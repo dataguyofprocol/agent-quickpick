@@ -22,7 +22,7 @@ const pkg = JSON.parse(
   contributes: {
     colors: { id: string }[];
     commands: { command: string }[];
-    keybindings: { command: string; key: string }[];
+    keybindings: { command: string; key: string; when?: string }[];
   };
 };
 
@@ -176,9 +176,10 @@ suite("consistency: contributed commands + keybinding", () => {
     "agentQuickpick.sessions",
     "agentQuickpick.removeHooks",
     "agentQuickpick.openKeybindings",
+    "agentQuickpick.renameSession",
   ];
 
-  test("all four commands are contributed", () => {
+  test("all five commands are contributed", () => {
     const contributed = new Set(pkg.contributes.commands.map((c) => c.command));
     for (const cmd of COMMANDS) {
       assert.ok(contributed.has(cmd), `${cmd} must be in contributes.commands`);
@@ -186,9 +187,19 @@ suite("consistency: contributed commands + keybinding", () => {
     assert.strictEqual(contributed.size, COMMANDS.length, "no stray commands");
   });
 
-  test("the default keybinding targets agentQuickpick.open", () => {
-    assert.strictEqual(pkg.contributes.keybindings.length, 1);
-    assert.strictEqual(pkg.contributes.keybindings[0].command, "agentQuickpick.open");
-    assert.ok(pkg.contributes.keybindings[0].key, "default keybinding must exist");
+  test("default keybindings target launcher and sessions rename", () => {
+    assert.strictEqual(pkg.contributes.keybindings.length, 2);
+    const byCommand = new Map(
+      pkg.contributes.keybindings.map((k) => [k.command, k])
+    );
+    assert.strictEqual(byCommand.get("agentQuickpick.open")?.key, "ctrl+shift+a");
+    assert.strictEqual(
+      byCommand.get("agentQuickpick.renameSession")?.key,
+      "r"
+    );
+    assert.strictEqual(
+      byCommand.get("agentQuickpick.renameSession")?.when,
+      "agentQuickpick.sessionsOpen && agentQuickpick.sessionsInputEmpty && agentQuickpick.sessionsRenameAvailable"
+    );
   });
 });

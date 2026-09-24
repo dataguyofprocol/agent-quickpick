@@ -1,7 +1,7 @@
 /**
  * The universal exit-status poller fallback — detects finished/failed for
- * agents whose hooks never fire. Uses fake terminals ({name, exitStatus}):
- * pollExitStatuses only touches those two fields of vscode.Terminal.
+ * agents whose hooks never fire. Uses fake terminals ({name, creationOptions,
+ * exitStatus}); pollExitStatuses only touches those fields of vscode.Terminal.
  * Unit tier — no VS Code host needed.
  */
 
@@ -14,6 +14,19 @@ import { type SessionState, pollExitStatuses } from "../../lifecycle";
 function terminal(name: string, exitCode?: number): vscode.Terminal {
   return {
     name,
+    ...(exitCode !== undefined ? { exitStatus: { code: exitCode } } : {}),
+  } as vscode.Terminal;
+}
+
+/** Fake with a frozen creation name, like a tab renamed after launch. */
+function renamedTerminal(
+  currentName: string,
+  creationName: string,
+  exitCode?: number
+): vscode.Terminal {
+  return {
+    name: currentName,
+    creationOptions: { name: creationName },
     ...(exitCode !== undefined ? { exitStatus: { code: exitCode } } : {}),
   } as vscode.Terminal;
 }
@@ -48,6 +61,27 @@ suite("pollExitStatuses", () => {
   test("agent match is case-insensitive", () => {
     const result = pollExitStatuses([terminal("CLAUDE", 0)], new Map(), AGENTS);
     assert.ok(result.has("CLAUDE"));
+  });
+
+  test("renamed tab still matches its original creation name", () => {
+    const result = pollExitStatuses(
+      [renamedTerminal("My Claude", "Claude", 0)],
+      new Map([["Claude", session("Claude", "running")]]),
+      AGENTS
+    );
+    assert.deepStrictEqual(result.get("My Claude"), {
+      status: "finished",
+      exitCode: 0,
+    });
+  });
+
+  test("renamed tab skips a session already in a final state", () => {
+    const result = pollExitStatuses(
+      [renamedTerminal("My Claude", "Claude", 0)],
+      new Map([["Claude", session("Claude", "finished")]]),
+      AGENTS
+    );
+    assert.strictEqual(result.size, 0);
   });
 
   test("non-agent terminals are ignored", () => {

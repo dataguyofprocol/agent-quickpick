@@ -398,6 +398,14 @@ export interface HookReportSpec {
 }
 
 /**
+ * Socket timeout (ms) for hook POSTs, shared by all three generated surfaces:
+ * the `node -e` hook command and the OpenCode / pi plugin files. Two seconds
+ * is long enough for a local POST, short enough that a hung server can't stall
+ * the agent CLI's hook pipeline.
+ */
+export const HOOK_TIMEOUT_MS = 2000;
+
+/**
  * Generate a self-contained `node -e` command that reads stdin JSON, reads the
  * lifecycle server URL + session name from env, and POSTs a hook payload to the
  * server. Embeds the marker (+ schema version tag) as a comment + payload field
@@ -454,7 +462,7 @@ export function buildNodeHookCommand(
   // Notification for this agent — even sessions we didn't launch. When
   // AQP_SESSION is absent (not one of ours), exit immediately: a no-op, no
   // socket, no dead-port noise.
-  return `node -e "/*${versionTag(marker)}*/if(!process.env.AQP_SESSION){process.exit(0)}const h=require('http'),fs=require('fs');let fileUrl;try{fileUrl=JSON.parse(fs.readFileSync('${escapedPortFilePath}','utf8')).url}catch(e){}const u=fileUrl||process.env.AQP_HOOK_URL||'${escapedUrl}';let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d||'{}');const b=JSON.stringify({marker:'${marker}',session:process.env.AQP_SESSION||'${escapedSession}',status:${statusFragment},agentName:'${marker.split(':')[1]||''}',cwd:${cwdFragment},reason:${reasonFragment},message:j?.message||''});const r=h.request(u,{method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(b)}});r.setTimeout(2000,()=>r.destroy());r.on('error',()=>{});r.end(b)}catch(e){}})"`;
+  return `node -e "/*${versionTag(marker)}*/if(!process.env.AQP_SESSION){process.exit(0)}const h=require('http'),fs=require('fs');let fileUrl;try{fileUrl=JSON.parse(fs.readFileSync('${escapedPortFilePath}','utf8')).url}catch(e){}const u=fileUrl||process.env.AQP_HOOK_URL||'${escapedUrl}';let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d||'{}');const b=JSON.stringify({marker:'${marker}',session:process.env.AQP_SESSION||'${escapedSession}',status:${statusFragment},agentName:'${marker.split(':')[1]||''}',cwd:${cwdFragment},reason:${reasonFragment},message:j?.message||''});const r=h.request(u,{method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(b)}});r.setTimeout(${HOOK_TIMEOUT_MS},()=>r.destroy());r.on('error',()=>{});r.end(b)}catch(e){}})"`;
 }
 
 /**
@@ -1204,6 +1212,23 @@ export function sessionFromFocusUri(
 }
 
 /**
+ * Strip control characters and shell metacharacters from user-derived text before
+ * it reaches a subprocess argv. The subprocesses we spawn (terminal-notifier,
+ * notify-send, afplay, etc.) already receive argv rather than shell source, but
+ * this sanitizer kills static taint so the analyzer can see the text is not
+ * being spliced into a command line.
+ */
+export function sanitizeArgvText(value: string): string {
+  // Allow letters, digits, whitespace, common punctuation, quotes, parentheses,
+  // and unicode symbols. Remove C0/C1 controls and characters that would be
+  // special in shell context (command substitution, pipes, redirects, etc.).
+  return value.replace(
+    /[\x00-\x1f\x7f;|`$&\\<>!*?#~%@+=\[\]{}^]/g,
+    ""
+  );
+}
+
+/**
  * Build the OS-notification command for a platform, or `null` where we have no
  * native channel (then the toast + sound still fire).
  *
@@ -1233,23 +1258,6 @@ export function sessionFromFocusUri(
  *   env vars. The AUMID is PowerShell's own registered id — an unregistered
  *   AppId makes `Show()` a silent no-op.
  */
-/**
- * Strip control characters and shell metacharacters from user-derived text before
- * it reaches a subprocess argv. The subprocesses we spawn (terminal-notifier,
- * notify-send, afplay, etc.) already receive argv rather than shell source, but
- * this sanitizer kills static taint so the analyzer can see the text is not
- * being spliced into a command line.
- */
-export function sanitizeArgvText(value: string): string {
-  // Allow letters, digits, whitespace, common punctuation, quotes, parentheses,
-  // and unicode symbols. Remove C0/C1 controls and characters that would be
-  // special in shell context (command substitution, pipes, redirects, etc.).
-  return value.replace(
-    /[\x00-\x1f\x7f;|`$&\\<>!*?#~%@+=\[\]{}^]/g,
-    ""
-  );
-}
-
 export function systemNotifyCommand(
   platform: NodeJS.Platform,
   title: string,
@@ -1552,9 +1560,28 @@ export interface PolledExit {
 }
 
 /**
+ * The name a terminal was created with, which does not change when the user
+ * renames the tab. `vscode.Terminal.creationOptions` is frozen at creation
+ * time; `vscode.Terminal.name` is the mutable display name. We match sessions
+ * by the creation name so a renamed agent tab still counts as its original
+ * agent.
+ */
+export function terminalCreationName(t: vscode.Terminal): string {
+  const options = t.creationOptions as { name?: unknown } | undefined;
+  return typeof options?.name === "string" && options.name.trim() !== ""
+    ? options.name
+    : t.name;
+}
+
+/**
  * Universal fallback: poll terminal exit statuses for agents that may not have
  * hooks wired (or whose hooks haven't fired yet). Detects process exit only —
  * not "needs input". Called on a ~3s interval from activate().
+ *
+ * Matching uses the terminal's creation name, so a tab renamed after launch is
+ * still recognized as its original agent. The returned map is keyed by the
+ * terminal's current display name; LifecycleContext resolves display name →
+ * session key before updating state.
  *
  * @returns a map of terminal name → {status, exitCode} for terminals whose
  *          process has exited (exitStatus defined) but aren't already marked.
@@ -1566,11 +1593,12 @@ export function pollExitStatuses(
 ): Map<string, PolledExit> {
   const result = new Map<string, PolledExit>();
   for (const t of terminals) {
-    const base = t.name.replace(/ \(\d+\)$/, "");
+    const creationName = terminalCreationName(t);
+    const base = creationName.replace(/ \(\d+\)$/, "");
     if (!agentNames.has(base.toLowerCase())) continue;
     const exit = t.exitStatus;
     if (!exit || exit.code === undefined) continue; // still running
-    const prev = sessions.get(t.name);
+    const prev = sessions.get(t.name) ?? sessions.get(creationName);
     // Skip sessions already in a final state (finished/failed). Everything
     // else — including `unknown` (re-adopted after a host reload) — is polled
     // so its real status is discovered once the process has exited.

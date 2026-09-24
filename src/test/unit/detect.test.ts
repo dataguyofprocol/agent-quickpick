@@ -8,13 +8,13 @@ import * as assert from "assert";
 import {
   isCmdInstalled,
   isSafeBinaryName,
-  _resetInstallCacheForTests,
+  clearInstallCache,
   _poisonInstallCacheForTests,
 } from "../../agents";
 
 suite("isCmdInstalled", () => {
-  setup(() => _resetInstallCacheForTests());
-  teardown(() => _resetInstallCacheForTests());
+  setup(() => clearInstallCache());
+  teardown(() => clearInstallCache());
 
   test("empty cmd → true (plain terminal)", async () => {
     assert.strictEqual(await isCmdInstalled(""), true);

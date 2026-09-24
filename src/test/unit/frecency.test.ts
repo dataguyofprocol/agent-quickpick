@@ -10,6 +10,8 @@ import {
   sortByFrecency,
   recordLaunch,
   readFrecency,
+  pruneFrecency,
+  type FrecencyMap,
   type MementoLike,
 } from "../../agents";
 
@@ -183,5 +185,47 @@ suite("recordLaunch (persistence via memento)", () => {
     const m = fakeMemento({ "frecency.v1": "not-an-object" });
     recordLaunch(m, "Claude", 1000);
     assert.deepStrictEqual(m.store.get("frecency.v1"), { claude: { c: 1, t: 1000 } });
+  });
+});
+
+suite("pruneFrecency", () => {
+  const NOW = 1_700_000_000_000;
+  const DAY = 86_400_000;
+
+  test("drops entries past the max age, keeps fresh ones", () => {
+    const map: FrecencyMap = {
+      claude: { c: 3, t: NOW - 1 * DAY },
+      codex: { c: 2, t: NOW - 179 * DAY },
+      boundary: { c: 1, t: NOW - 180 * DAY }, // exactly at the horizon — kept (strict >)
+      stale: { c: 99, t: NOW - 181 * DAY },
+    };
+    const pruned = pruneFrecency(map, NOW);
+    assert.deepStrictEqual(Object.keys(pruned).sort(), ["boundary", "claude", "codex"]);
+  });
+
+  test("drops keys whose entry is missing", () => {
+    const map = { ghost: undefined } as unknown as FrecencyMap;
+    assert.deepStrictEqual(pruneFrecency(map, NOW), {});
+  });
+
+  test("custom maxAgeMs overrides the default horizon", () => {
+    const map: FrecencyMap = { claude: { c: 1, t: NOW - 2 * DAY } };
+    pruneFrecency(map, NOW, 1 * DAY);
+    assert.deepStrictEqual(map, {});
+  });
+
+  test("recordLaunch prunes stale entries from the persisted store", () => {
+    const m = fakeMemento({
+      "frecency.v1": {
+        claude: { c: 1, t: NOW - 5 * DAY },
+        oldagent: { c: 50, t: NOW - 200 * DAY },
+      },
+    });
+    recordLaunch(m, "Codex", NOW);
+    // oldagent is past the horizon → gone; claude is fresh → untouched.
+    assert.deepStrictEqual(m.store.get("frecency.v1"), {
+      claude: { c: 1, t: NOW - 5 * DAY },
+      codex: { c: 1, t: NOW },
+    });
   });
 });

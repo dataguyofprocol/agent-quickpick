@@ -4,6 +4,22 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.1] — 2026-09-24
+
+### Changed
+- **The agent launcher opens instantly.** The first press of `agentQuickpick.open` (default ⌘⇧A) no longer waits out a 250 ms double-tap window before showing the launcher — it opens immediately. A second press while the launcher is open still swaps it for the running-sessions picker (the old double-tap outcome, now reached from the visible launcher instead of after a blank pause).
+- **Lighter, faster background work.** Install detection is prewarmed during activation, so the first launcher open no longer waits on the ~20-probe PATH burst behind a busy spinner, and probes now time out after 5 s — a hung PATH entry (e.g. a dead network mount) resolves as "not installed" instead of stalling the picker. The 3-second exit-status poller skips its tick in windows with no terminals open and no longer re-reads settings on every tick, and the sessions picker only round-trips a `setContext` update when the filter's emptiness actually changes rather than on every keystroke.
+- **Smaller long-lived state.** Frecency scores (which sync across machines) prune entries unused for 180+ days, expired install-detection cache entries are evicted instead of lingering for the window session, and pending launch-delay timers plus the lifecycle context are torn down cleanly on deactivate.
+- Maintainability: the generated `post()` body is now emitted from one shared template for the OpenCode and pi plugin files (socket timeout included), the session-key helper lives in one definition, dead code and a duplicate test-cache alias were removed, and the unit-tier test harness is deduplicated into a shared `helpers.ts` (restoring real stderr capture in hook-command failure messages).
+
+### Fixed
+- **Notification toasts name the session's own repo.** In multi-root workspaces a session running in folder B no longer toasts "· folder-a", and sessions with no known folder (re-adopted after a window reload) omit the repo suffix — matching the status bar and tooltip.
+
+## [0.12.0] — 2026-09-15
+
+### Added
+- **Rename agent tabs from the running-sessions picker.** Select any session in the list (open it with the double-tap shortcut, the status-bar button, or `agentQuickpick.sessions`) and click the edit button in the picker title bar — or press **R** while the filter is empty — to rename the tab. Renames preserve lifecycle status: hooks keep reporting the creation-time session name, while the extension keeps a display-name alias so notifications, status-bar counts, exit-status polling, and click-to-focus follow the renamed tab. Launch naming also reserves the original names of renamed tabs, so a new launch cannot collide with a still-running agent's hook key.
+
 ## [0.11.0] — 2026-09-08
 
 ### Added
