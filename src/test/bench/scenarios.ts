@@ -174,7 +174,7 @@ function serverRoundTrip(iterations: number): Scenario {
         JSON.stringify({
           marker: "agentQuickpick:claude",
           session: "Claude (2)",
-          status: "finished",
+          status: "done",
           agentName: "Claude",
           cwd: "/Users/someone/src/my-app",
           message: "",
@@ -275,7 +275,7 @@ export const SCENARIOS: Scenario[] = [
         sessions.set(terminals[i].name, {
           name: terminals[i].name,
           agentName: "Claude",
-          status: "running",
+          status: "working",
           changedAt: NOW,
         });
       }
@@ -306,7 +306,7 @@ export const SCENARIOS: Scenario[] = [
     name: "render: statusBar text+tooltip (500 sessions)",
     iterations: 2000,
     setup: () => {
-      const statuses = ["running", "finished", "waiting", "failed", "unknown"] as const;
+      const statuses = ["working", "done", "blocked", "error", "unknown"] as const;
       const states: SessionState[] = Array.from({ length: 500 }, (_, i) => ({
         name: `Claude (${i})`,
         agentName: "Claude",

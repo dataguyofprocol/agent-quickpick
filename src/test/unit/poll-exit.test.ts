@@ -45,12 +45,12 @@ suite("pollExitStatuses", () => {
 
   test("agent terminal exited 0 → finished with exitCode", () => {
     const result = pollExitStatuses([terminal("Claude", 0)], new Map(), AGENTS);
-    assert.deepStrictEqual(result.get("Claude"), { status: "finished", exitCode: 0 });
+    assert.deepStrictEqual(result.get("Claude"), { status: "done", exitCode: 0 });
   });
 
   test("agent terminal exited non-zero → failed with exitCode", () => {
     const result = pollExitStatuses([terminal("Claude", 130)], new Map(), AGENTS);
-    assert.deepStrictEqual(result.get("Claude"), { status: "failed", exitCode: 130 });
+    assert.deepStrictEqual(result.get("Claude"), { status: "error", exitCode: 130 });
   });
 
   test("numbered sessions match their agent (counter stripped)", () => {
@@ -66,11 +66,11 @@ suite("pollExitStatuses", () => {
   test("renamed tab still matches its original creation name", () => {
     const result = pollExitStatuses(
       [renamedTerminal("My Claude", "Claude", 0)],
-      new Map([["Claude", session("Claude", "running")]]),
+      new Map([["Claude", session("Claude", "working")]]),
       AGENTS
     );
     assert.deepStrictEqual(result.get("My Claude"), {
-      status: "finished",
+      status: "done",
       exitCode: 0,
     });
   });
@@ -78,7 +78,7 @@ suite("pollExitStatuses", () => {
   test("renamed tab skips a session already in a final state", () => {
     const result = pollExitStatuses(
       [renamedTerminal("My Claude", "Claude", 0)],
-      new Map([["Claude", session("Claude", "finished")]]),
+      new Map([["Claude", session("Claude", "done")]]),
       AGENTS
     );
     assert.strictEqual(result.size, 0);
@@ -106,9 +106,9 @@ suite("pollExitStatuses", () => {
 
   test("sessions already finished or failed are skipped (no re-report)", () => {
     const sessions = new Map<string, SessionState>([
-      ["Claude", session("Claude", "finished")],
-      ["Codex", session("Codex", "failed")],
-      ["OpenCode", session("OpenCode", "running")],
+      ["Claude", session("Claude", "done")],
+      ["Codex", session("Codex", "error")],
+      ["OpenCode", session("OpenCode", "working")],
     ]);
     const result = pollExitStatuses(
       [terminal("Claude", 0), terminal("Codex", 1), terminal("OpenCode", 0)],
@@ -124,15 +124,15 @@ suite("pollExitStatuses", () => {
       ["Claude", session("Claude", "unknown")],
     ]);
     const result = pollExitStatuses([terminal("Claude", 0)], sessions, AGENTS);
-    assert.deepStrictEqual(result.get("Claude"), { status: "finished", exitCode: 0 });
+    assert.deepStrictEqual(result.get("Claude"), { status: "done", exitCode: 0 });
   });
 
   test("waiting sessions are polled too (a crashed agent must not stay 'blocked')", () => {
     const sessions = new Map<string, SessionState>([
-      ["Claude", session("Claude", "waiting")],
+      ["Claude", session("Claude", "blocked")],
     ]);
     const result = pollExitStatuses([terminal("Claude", 1)], sessions, AGENTS);
-    assert.deepStrictEqual(result.get("Claude"), { status: "failed", exitCode: 1 });
+    assert.deepStrictEqual(result.get("Claude"), { status: "error", exitCode: 1 });
   });
 
   test("agent names come from the live config — custom user agents are polled", () => {

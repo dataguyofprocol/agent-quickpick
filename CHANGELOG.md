@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.3] — 2026-09-25
+
+### Fixed
+- **macOS notifications no longer show as Script Editor or open Finder.** Clickable notifications always use the bundled or user-installed `terminal-notifier`, even when a desktop editor fork such as Deepseek Harness has no exposed bundle id. Removed the `osascript` fallback because macOS attributes it to Script Editor and its click opens Finder with a script URL; if the notifier is unavailable, only the OS notification is skipped (the in-editor toast still works).
+
 ## [0.12.1] — 2026-09-24
 
 ### Changed

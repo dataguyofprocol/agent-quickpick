@@ -18,30 +18,30 @@ import {
   waitingLabel,
 } from "../../lifecycle";
 
-const ANNOUNCED: LifecycleStatus[] = ["finished", "waiting", "failed"];
-const SILENT: LifecycleStatus[] = ["running", "unknown"];
+const ANNOUNCED: LifecycleStatus[] = ["done", "blocked", "error"];
+const SILENT: LifecycleStatus[] = ["working", "unknown"];
 
 suite("shouldNotify", () => {
   test("fires on finished when active + setting on", () => {
-    assert.ok(shouldNotify("finished", false, true));
+    assert.ok(shouldNotify("done", false, true));
   });
 
   test("fires on waiting", () => {
-    assert.ok(shouldNotify("waiting", false, true));
+    assert.ok(shouldNotify("blocked", false, true));
   });
 
   test("suppressed when terminal is active/focused", () => {
-    assert.ok(!shouldNotify("finished", true, true));
-    assert.ok(!shouldNotify("waiting", true, true));
+    assert.ok(!shouldNotify("done", true, true));
+    assert.ok(!shouldNotify("blocked", true, true));
   });
 
   test("suppressed when setting is off", () => {
-    assert.ok(!shouldNotify("finished", false, false));
-    assert.ok(!shouldNotify("waiting", false, false));
+    assert.ok(!shouldNotify("done", false, false));
+    assert.ok(!shouldNotify("blocked", false, false));
   });
 
   test("never fires on running", () => {
-    assert.ok(!shouldNotify("running", false, true));
+    assert.ok(!shouldNotify("working", false, true));
   });
 
   test("never fires on unknown (no confident state to announce)", () => {
@@ -51,15 +51,15 @@ suite("shouldNotify", () => {
   });
 
   test("fires on failed (crashes must be visible)", () => {
-    assert.ok(shouldNotify("failed", false, true));
+    assert.ok(shouldNotify("error", false, true));
   });
 
   test("failed suppressed when terminal is active/focused", () => {
-    assert.ok(!shouldNotify("failed", true, true));
+    assert.ok(!shouldNotify("error", true, true));
   });
 
   test("failed suppressed when setting is off", () => {
-    assert.ok(!shouldNotify("failed", false, false));
+    assert.ok(!shouldNotify("error", false, false));
   });
 });
 
@@ -101,8 +101,8 @@ suite("shouldSystemNotify", () => {
   test("ignores terminal focus by design — unfocused window still notifies", () => {
     // Regression guard: shouldNotify() suppresses on active terminal; the OS
     // path must NOT inherit that, or a backgrounded window goes silent.
-    assert.ok(!shouldNotify("finished", true, true));
-    assert.ok(shouldSystemNotify("whenUnfocused", "finished", false, true));
+    assert.ok(!shouldNotify("done", true, true));
+    assert.ok(shouldSystemNotify("whenUnfocused", "done", false, true));
   });
 });
 
@@ -120,8 +120,8 @@ suite("shouldPlaySound", () => {
   });
 
   test("respects its own setting and the master switch", () => {
-    assert.ok(!shouldPlaySound(false, "finished", true));
-    assert.ok(!shouldPlaySound(true, "finished", false));
+    assert.ok(!shouldPlaySound(false, "done", true));
+    assert.ok(!shouldPlaySound(true, "done", false));
   });
 
   test("independent of where the notification renders", () => {
@@ -140,27 +140,27 @@ suite("isAnnouncedStatus", () => {
 
 suite("notificationMessage", () => {
   test("finished → glyph + agent + repo + Show action", () => {
-    const msg = notificationMessage("Claude", "finished", "my-app");
+    const msg = notificationMessage("Claude", "done", "my-app");
     assert.ok(msg);
-    assert.strictEqual(msg!.text, "✓ Claude finished · my-app");
+    assert.strictEqual(msg!.text, "✓ Claude done · my-app");
     assert.strictEqual(msg!.action, "Show");
   });
 
   test("waiting → glyph + agent + repo + Show action", () => {
-    const msg = notificationMessage("OpenCode", "waiting", "my-app");
+    const msg = notificationMessage("OpenCode", "blocked", "my-app");
     assert.ok(msg);
-    assert.strictEqual(msg!.text, "⏸ OpenCode needs your input · my-app");
+    assert.strictEqual(msg!.text, "⏸ OpenCode is blocked · my-app");
     assert.strictEqual(msg!.action, "Show");
   });
 
   test("omits the repo suffix when repo is absent/empty", () => {
-    assert.strictEqual(notificationMessage("Claude", "finished")!.text, "✓ Claude finished");
-    assert.strictEqual(notificationMessage("Claude", "finished", "")!.text, "✓ Claude finished");
-    assert.strictEqual(notificationMessage("Claude", "finished", "  ")!.text, "✓ Claude finished");
+    assert.strictEqual(notificationMessage("Claude", "done")!.text, "✓ Claude done");
+    assert.strictEqual(notificationMessage("Claude", "done", "")!.text, "✓ Claude done");
+    assert.strictEqual(notificationMessage("Claude", "done", "  ")!.text, "✓ Claude done");
   });
 
   test("running → null", () => {
-    assert.strictEqual(notificationMessage("Claude", "running"), null);
+    assert.strictEqual(notificationMessage("Claude", "working"), null);
   });
 
   test("unknown → null", () => {
@@ -168,28 +168,28 @@ suite("notificationMessage", () => {
   });
 
   test("failed → glyph + crashed + Show action", () => {
-    const msg = notificationMessage("Claude", "failed", "my-app");
+    const msg = notificationMessage("Claude", "error", "my-app");
     assert.ok(msg);
-    assert.strictEqual(msg!.text, "✗ Claude crashed · my-app");
+    assert.strictEqual(msg!.text, "✗ Claude error · my-app");
     assert.strictEqual(msg!.action, "Show");
   });
 
   test("failed includes exit code when provided", () => {
-    const msg = notificationMessage("Claude", "failed", "my-app", 130);
+    const msg = notificationMessage("Claude", "error", "my-app", 130);
     assert.ok(msg);
-    assert.strictEqual(msg!.text, "✗ Claude crashed · my-app · exit 130");
+    assert.strictEqual(msg!.text, "✗ Claude error · my-app · exit 130");
   });
 
   test("failed omits repo suffix when repo absent, still shows exit code", () => {
-    const msg = notificationMessage("Claude", "failed", undefined, 1);
+    const msg = notificationMessage("Claude", "error", undefined, 1);
     assert.ok(msg);
-    assert.strictEqual(msg!.text, "✗ Claude crashed · exit 1");
+    assert.strictEqual(msg!.text, "✗ Claude error · exit 1");
   });
 
   test("failed without exit code or repo", () => {
-    const msg = notificationMessage("Claude", "failed");
+    const msg = notificationMessage("Claude", "error");
     assert.ok(msg);
-    assert.strictEqual(msg!.text, "✗ Claude crashed");
+    assert.strictEqual(msg!.text, "✗ Claude error");
   });
 });
 
@@ -224,36 +224,36 @@ suite("waiting reasons — copy", () => {
   test("toast headline per reason", () => {
     assert.strictEqual(
       waitingHeadline("Claude", "permission"),
-      "Claude wants to run a command — approve?"
+      "Claude is blocked on permission"
     );
     assert.strictEqual(
       waitingHeadline("OpenCode", "question"),
-      "OpenCode asked a question — needs your answer"
+      "OpenCode is blocked on a question"
     );
-    assert.strictEqual(waitingHeadline("Droid"), "Droid needs your input");
+    assert.strictEqual(waitingHeadline("Droid"), "Droid is blocked");
   });
 
   test("compact picker/tooltip label per reason", () => {
-    assert.strictEqual(waitingLabel("permission"), "wants a command approved");
-    assert.strictEqual(waitingLabel("question"), "asked a question");
+    assert.strictEqual(waitingLabel("permission"), "blocked · permission");
+    assert.strictEqual(waitingLabel("question"), "blocked · question");
     assert.strictEqual(waitingLabel(undefined), "blocked");
   });
 
   test("notificationMessage threads the reason into the waiting toast", () => {
-    const msg = notificationMessage("Claude", "waiting", "my-app", undefined, "permission");
+    const msg = notificationMessage("Claude", "blocked", "my-app", undefined, "permission");
     assert.ok(msg);
-    assert.strictEqual(msg!.text, "⏸ Claude wants to run a command — approve? · my-app");
+    assert.strictEqual(msg!.text, "⏸ Claude is blocked on permission · my-app");
   });
 
   test("notificationMessage waiting without a reason keeps the generic copy", () => {
-    const msg = notificationMessage("Droid", "waiting", "my-app");
+    const msg = notificationMessage("Droid", "blocked", "my-app");
     assert.ok(msg);
-    assert.strictEqual(msg!.text, "⏸ Droid needs your input · my-app");
+    assert.strictEqual(msg!.text, "⏸ Droid is blocked · my-app");
   });
 
   test("reason is ignored for non-waiting statuses", () => {
-    const msg = notificationMessage("Claude", "finished", "my-app", undefined, "permission");
+    const msg = notificationMessage("Claude", "done", "my-app", undefined, "permission");
     assert.ok(msg);
-    assert.strictEqual(msg!.text, "✓ Claude finished · my-app");
+    assert.strictEqual(msg!.text, "✓ Claude done · my-app");
   });
 });

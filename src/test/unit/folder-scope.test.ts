@@ -15,7 +15,7 @@ import { makeState } from "./helpers";
 suite("folderOf", () => {
   test("prefers cwd over launchedInFolder", () => {
     const got = folderOf(
-      makeState("Claude", "Claude", "running", 100, {
+      makeState("Claude", "Claude", "working", 100, {
         cwd: "/a/cwd",
         launchedInFolder: "/b/launch",
       })
@@ -25,7 +25,7 @@ suite("folderOf", () => {
 
   test("falls back to launchedInFolder when cwd is absent", () => {
     const got = folderOf(
-      makeState("Claude", "Claude", "running", 100, {
+      makeState("Claude", "Claude", "working", 100, {
         launchedInFolder: "/b/launch",
       })
     );
@@ -64,8 +64,8 @@ suite("folderBasename", () => {
 suite("filterSessionsByFolder", () => {
   test("returns everything when activeFolder is undefined (no workspace)", () => {
     const states = [
-      makeState("Claude", "Claude", "running", 100, { cwd: "/a" }),
-      makeState("Codex", "Codex", "running", 100, { cwd: "/b" }),
+      makeState("Claude", "Claude", "working", 100, { cwd: "/a" }),
+      makeState("Codex", "Codex", "working", 100, { cwd: "/b" }),
       makeState("ReAdopted", "ReAdopted", "unknown", 100),
     ];
     assert.strictEqual(filterSessionsByFolder(states, undefined).length, 3);
@@ -73,8 +73,8 @@ suite("filterSessionsByFolder", () => {
 
   test("filters to sessions whose cwd matches the active folder", () => {
     const states = [
-      makeState("Claude", "Claude", "running", 100, { cwd: "/repo/alpha" }),
-      makeState("Codex", "Codex", "running", 100, { cwd: "/repo/beta" }),
+      makeState("Claude", "Claude", "working", 100, { cwd: "/repo/alpha" }),
+      makeState("Codex", "Codex", "working", 100, { cwd: "/repo/beta" }),
     ];
     const filtered = filterSessionsByFolder(states, "/repo/alpha");
     assert.strictEqual(filtered.length, 1);
@@ -83,10 +83,10 @@ suite("filterSessionsByFolder", () => {
 
   test("falls back to launchedInFolder when cwd is absent", () => {
     const states = [
-      makeState("Claude", "Claude", "running", 100, {
+      makeState("Claude", "Claude", "working", 100, {
         launchedInFolder: "/repo/alpha",
       }),
-      makeState("Codex", "Codex", "running", 100, {
+      makeState("Codex", "Codex", "working", 100, {
         launchedInFolder: "/repo/beta",
       }),
     ];
@@ -98,7 +98,7 @@ suite("filterSessionsByFolder", () => {
   test("excludes re-adopted sessions (no cwd, no launchedInFolder) when a folder is set", () => {
     const states = [
       makeState("Claude", "Claude", "unknown", 100),
-      makeState("Codex", "Codex", "running", 100, { cwd: "/repo/alpha" }),
+      makeState("Codex", "Codex", "working", 100, { cwd: "/repo/alpha" }),
     ];
     const filtered = filterSessionsByFolder(states, "/repo/alpha");
     assert.strictEqual(filtered.length, 1);

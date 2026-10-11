@@ -6,11 +6,10 @@ import * as os from "os";
 import {
   type SessionState,
   type LifecycleStatus,
-  type HookPayload,
-  type LifecycleAdapter,
+  ProgramStatusParser,
+  detectHeuristicStatus,
   readConfigJson,
   writeConfigJson,
-  startLifecycleServer,
   pollExitStatuses,
   countByStatus,
   statusBarText,
@@ -22,9 +21,7 @@ import {
   STATUS_GLYPH,
   shouldNotify,
   notificationMessage,
-  classifyWaitingMessage,
   waitingLabel,
-  HOOK_ENV,
   type SystemNotifyMode,
   type SpawnSpec,
   type WaitingReason,
@@ -40,18 +37,9 @@ import {
   FOCUS_URI_SESSION_PARAM,
   sessionFromFocusUri,
   terminalCreationName,
-  shouldWritePluginFile,
   shouldRemovePluginFile,
-  type PluginFileAdapter,
 } from "./lifecycle";
-import {
-  LIFECYCLE_ADAPTERS,
-  CLAUDE_ADAPTER,
-  DROID_ADAPTER,
-  getAdapter,
-  isLifecycleAgent,
-  isAbsoluteForPlatform,
-} from "./lifecycle-adapters";
+import { LIFECYCLE_ADAPTERS, CLAUDE_ADAPTER, DROID_ADAPTER } from "./lifecycle-adapters";
 import {
   type AgentConfig,
   type ResolvedAgent,
@@ -271,28 +259,17 @@ async function launchAgent(
   ]);
   const tabName = uniqueTerminalName(agent.name, openNames);
 
-  // Inject lifecycle env for supported agents so their hooks can call back to
-  // our server. Non-lifecycle agents get no env injection (byte-identical to
-  // pre-lifecycle behavior). The server URL resolves only once the socket is
-  // listening, so await it — it's bound within milliseconds of activate().
-  const adapter = isLifecycleAgent(agent.name) ? getAdapter(agent.name) : undefined;
-  const hookUrl = adapter && lifecycle ? await lifecycle.hookUrl() : undefined;
-  const env =
-    adapter && hookUrl ? HOOK_ENV(hookUrl, tabName) : undefined;
-
   const terminal = vscode.window.createTerminal({
     name: tabName,
     iconPath: agent.iconPath,
     color: agent.color,
     location: vscode.TerminalLocation.Editor,
-    ...(env ? { env } : {}),
   });
   terminal.show();
 
-  // Register the session so the status bar / notifications know about it.
-  if (adapter && lifecycle) {
-    lifecycle.trackSession(tabName, agent.name, activeWorkspaceFolder());
-  }
+  // Track agent terminals immediately; status becomes known from OSC, fallback
+  // heuristics, or the process exit poller.
+  lifecycle?.trackSession(tabName, agent.name, activeWorkspaceFolder());
 
   const text = launchText(agent);
   const delay = launchDelay(agent.isPlainTerminal, delayMs);
@@ -321,14 +298,6 @@ async function launchAgent(
     } catch {
       // globalState write failures are non-fatal — don't block the launch.
     }
-  }
-
-  // Prompt once to install the lifecycle hook globally (into the agent's
-  // user-level config, keyed by marker — never per-workspace).
-  if (adapter && lifecycle) {
-    lifecycle.maybePromptInstall(adapter).catch(() => {
-      // Prompt failures are non-fatal.
-    });
   }
 
   return terminal;
@@ -498,27 +467,21 @@ async function runSessions(context: vscode.ExtensionContext): Promise<void> {
     return opts?.iconPath ?? new vscode.ThemeIcon("terminal");
   };
 
-  // Sort attention-needing sessions to the top:
-  // blocked → failed → done → working → reconnecting.
+  // Sort attention-needing sessions to the top, then active and idle states.
   const order: Record<LifecycleStatus, number> = {
-    waiting: 0,
-    failed: 1,
-    finished: 2,
-    running: 3,
-    unknown: 4,
+    blocked: 0, error: 1, done: 2, working: 3, idle: 4, unknown: 5,
   };
   const statusOf = (t: vscode.Terminal): LifecycleStatus =>
-    lifecycleCtx?.getSessionState(t.name)?.status ?? "running";
+    lifecycleCtx?.getSessionState(t.name)?.status ?? "unknown";
 
   const items: SessionItem[] = [...sessions]
     .sort((a, b) => order[statusOf(a)] - order[statusOf(b)])
     .map((t) => {
       const state = lifecycleCtx?.getSessionState(t.name);
-      const status = state?.status ?? "running";
-      // Reason-aware wait label, so the picker says "⏸ wants a command approved"
-      // instead of a generic "⏸ blocked" when the agent is blocked on an approval.
-      const label = status === "waiting"
-        ? waitingLabel(state?.waitingReason)
+      const status = state?.status ?? "unknown";
+      // Include OSC's standard blocked kind when the agent reports one.
+      const label = status === "blocked" && state?.blockedKind
+        ? waitingLabel(state.blockedKind)
         : STATUS_LABEL[status];
       return {
         label: t.name,
@@ -773,9 +736,9 @@ function fireAndForget(spec: SpawnSpec | null): void {
  *
  * If `__CFBundleIdentifier` is unset (a sanitized env, or a non-GUI launch) we
  * only assume VS Code when `vscode.env.uriScheme` agrees — otherwise a fork
- * would wrongly wear VS Code's icon. With no safe guess we return `undefined`
- * and `systemNotifyCommand` falls back to `osascript`. Never an error:
- * notification playback is fire-and-forget.
+ * would wrongly wear VS Code's icon. With no safe guess we return `undefined`;
+ * click-to-focus still works via the focus URI, without attributing the banner
+ * to the wrong app. Notification playback is fire-and-forget.
  */
 function hostBundleId(): string | undefined {
   if (process.platform !== "darwin") {
@@ -830,12 +793,12 @@ const notifierPath = (() => {
       ) ?? null;
     // An unpacker can strip the executable bit off the bundled Mach-O; restore it
     // best-effort so the first notification posts instead of silently ENOEXEC-ing
-    // down to the Script Editor fallback. Only the vendored binary is ours to fix.
+    // down to the unavailable-notifier case. Only the vendored binary is ours to fix.
     if (cached !== null && cached.endsWith(VENDORED_NOTIFIER_REL)) {
       try {
         fs.chmodSync(cached, 0o755);
       } catch {
-        // ignore — fire-and-forget spawn still tries, then falls back to osascript
+        // ignore — fire-and-forget spawn still tries; no misleading fallback banner
       }
     }
     return cached ?? undefined;
@@ -910,24 +873,16 @@ function configuredAgentNames(): Set<string> {
  * existing call sites don't all need an extra parameter.
  */
 export class LifecycleContext {
-  /**
-   * Resolves to the bound server URL once the socket is listening. The port
-   * isn't known synchronously after `listen()`, so callers that need to inject
-   * the URL into a terminal must `await` {@link hookUrl}.
-   */
-  private readonly serverUrlPromise: Promise<string>;
+  /** Owns per-terminal OSC parsers, status state, and notifications. */
   private readonly sessions = new Map<string, SessionState>();
-  /**
-   * Current terminal display name → lifecycle session key (the original
-   * `AQP_SESSION` name baked into the terminal's env at creation). Hooks keep
-   * reporting the original name forever, so renames must not move the map key;
-   * this alias lets the UI/poller find the session by its current tab name.
-   */
+  private readonly parsers = new Map<string, ProgramStatusParser>();
+  private readonly recentOutput = new Map<string, string>();
+  /** Current display-name aliases back to a stable lifecycle session key. */
   private readonly sessionAliases = new Map<string, string>();
   private readonly statusItem: vscode.StatusBarItem;
   private readonly context: vscode.ExtensionContext;
-  private readonly server: { url: Promise<string>; dispose: () => void };
   private readonly pollTimer: NodeJS.Timeout;
+  private readonly outputDisposable: vscode.Disposable;
   private readonly closeDisposable: vscode.Disposable;
   /** Disposes the agentQuickpick.agents subscription created in the constructor. */
   private readonly agentsConfigDisposable: vscode.Disposable;
@@ -941,35 +896,22 @@ export class LifecycleContext {
   constructor(context: vscode.ExtensionContext, statusItem: vscode.StatusBarItem) {
     this.context = context;
     this.statusItem = statusItem;
-
-    this.server = startLifecycleServer((payload) => this.onHookEvent(payload));
-    this.serverUrlPromise = this.server.url;
-
-    // Persist the current URL to a stable, install-time-baked path so a hook
-    // command written before this activation (frozen `AQP_HOOK_URL` env, dead
-    // port) can still find the live server — see the resolution order
-    // documented on `buildNodeHookCommand`. Best-effort: a write failure just
-    // means stale-terminal recovery falls back to the frozen env var, same as
-    // before this existed.
-    this.serverUrlPromise
-      .then(async (url) => {
-        try {
-          await fs.promises.mkdir(path.dirname(this.portFilePath()), {
-            recursive: true,
-          });
-          await writeFileAtomic(
-            this.portFilePath(),
-            JSON.stringify({ url })
-          );
-        } catch {
-          // Non-fatal — see comment above.
-        }
-      })
-      .catch(() => {
-        // Server failed to bind — nothing to persist.
-      });
-
     this.agentNames = configuredAgentNames();
+    const onShellStart = vscode.window.onDidStartTerminalShellExecution;
+    this.outputDisposable = typeof onShellStart === "function"
+      ? onShellStart((event) => {
+          const terminal = event.terminal;
+          const execution = event.execution as vscode.TerminalShellExecution & { read?: () => AsyncIterable<string> };
+          if (typeof execution.read !== "function") return;
+          void (async () => {
+            try {
+              for await (const chunk of execution.read!()) this.consumeOutput(terminal, chunk, execution.cwd?.fsPath);
+            } catch {
+              // Shell integration may end before its output stream does.
+            }
+          })();
+        })
+      : { dispose: () => {} };
 
     // Universal fallback: poll exit statuses every 3s for agents whose process
     // has exited (detects finished/failed even without hooks). The agent set is
@@ -997,27 +939,24 @@ export class LifecycleContext {
           ? this.sessionKeyForTerminal(terminal)
           : name;
         const prev = this.sessions.get(session);
-        // Monotonic-failed: never demote a terminal failure (e.g. a late Stop
-        // hook arriving after a non-zero exit must not flip failed → finished).
-        if (prev && prev.status === "failed" && exit.status === "finished") {
-          continue;
-        }
+        // A protocol-reported error remains authoritative over a successful exit.
+        if (prev?.authoritative) continue;
+        if (prev?.status === "error" && exit.status === "done") continue;
         const fallbackAgentName = terminal
           ? baseTerminalName(terminalCreationName(terminal))
           : baseTerminalName(name);
         this.sessions.set(session, {
+          ...(prev ?? {} as SessionState),
           name: prev?.name ?? terminal?.name ?? session,
           agentName: prev?.agentName ?? fallbackAgentName,
           status: exit.status,
           changedAt: now,
           exitCode: exit.exitCode,
-          // Preserve any repo-association fields we already had so a
-          // hook-reported cwd or the launch folder survives a poller update.
           ...(prev?.launchedInFolder ? { launchedInFolder: prev.launchedInFolder } : {}),
           ...(prev?.cwd ? { cwd: prev.cwd } : {}),
         });
         changed = true;
-        this.maybeNotify(session, exit.status, exit.exitCode);
+        if (prev?.status !== exit.status) this.maybeNotify(session, exit.status, exit.exitCode);
       }
       if (changed) {
         this.refreshStatusBar();
@@ -1029,6 +968,8 @@ export class LifecycleContext {
     // never removed (no eviction existed).
     this.closeDisposable = vscode.window.onDidCloseTerminal((t) => {
       const session = this.sessionKeyForTerminal(t);
+      this.parsers.delete(session);
+      this.recentOutput.delete(session);
       const deleted = this.sessions.delete(session);
       this.sessionAliases.delete(t.name);
       for (const [displayName, key] of this.sessionAliases) {
@@ -1100,60 +1041,17 @@ export class LifecycleContext {
     * Register a newly-launched agent terminal as a running session. The
     * launching workspace folder is captured once and treated as immutable — it
     * is the fallback for repo-scoping until a hook arrives with the agent's
-    * real `cwd`.
+    * real current working directory.
     */
    trackSession(tabName: string, agentName: string, launchedInFolder?: string): void {
      this.sessions.set(tabName, {
        name: tabName,
        agentName,
-       status: "running",
+       status: "unknown",
        changedAt: Date.now(),
        ...(launchedInFolder ? { launchedInFolder } : {}),
      });
      this.refreshStatusBar();
-   }
-
-   /** Handle a hook payload POSTed by an agent's lifecycle hook. */
-   private onHookEvent(payload: HookPayload): void {
-     if (!payload.session || !payload.status) {
-       return;
-     }
-     const status = payload.status as LifecycleStatus;
-     // Hooks always report the creation-time session name baked into
-     // AQP_SESSION. A user rename only changes the display name in our alias
-     // map, so resolve back to the stable key before looking up state.
-     const session = this.sessionAliases.get(payload.session) ?? payload.session;
-     const prev = this.sessions.get(session);
-     if (prev === undefined) {
-       return; // unknown session — ignore (e.g. from a different window)
-     }
-     // Monotonic-failed: a terminal failure (non-zero exit) must not be
-     // overwritten by a late hook claiming success.
-     if (prev.status === "failed" && status === "finished") {
-       return;
-     }
-     // A hook carrying `cwd` is the source of truth for the session's repo
-     // (accounts for `cd` inside the agent). Empty/absent cwd is ignored so we
-     // never clobber an existing value with nothing.
-     const cwd = typeof payload.cwd === "string" && payload.cwd !== "" ? payload.cwd : prev.cwd;
-     // Why the agent is waiting, when the payload can tell: OpenCode sends a
-     // typed reason; Claude only a free-text message we classify. A typed
-     // reason always wins; the classifier is the fallback. Only meaningful
-     // while waiting — cleared on every other transition so a stale reason
-     // can't outlive its wait.
-     const waitingReason: WaitingReason | undefined =
-       status === "waiting"
-         ? payload.reason ?? classifyWaitingMessage(payload.message)
-         : undefined;
-     this.sessions.set(session, {
-       ...prev,
-       status,
-       changedAt: Date.now(),
-       ...(cwd ? { cwd } : {}),
-       waitingReason,
-     });
-     this.refreshStatusBar();
-     this.maybeNotify(session, status, undefined, waitingReason);
    }
 
   /**
@@ -1166,7 +1064,7 @@ export class LifecycleContext {
    * legitimately produce a sound + OS notification and no toast (VS Code in the
    * background), or a toast + sound and no OS notification (window focused).
    */
-  private maybeNotify(session: string, status: LifecycleStatus, exitCode?: number, waitingReason?: WaitingReason): void {
+  private maybeNotify(session: string, status: LifecycleStatus, exitCode?: number, waitingReason?: WaitingReason, detail?: string): void {
     const config = vscode.workspace.getConfiguration("agentQuickpick");
     const settingOn = config.get<boolean>("lifecycleNotifications", true);
     const systemMode = config.get<SystemNotifyMode>(
@@ -1188,13 +1086,13 @@ export class LifecycleContext {
     // no known folder omits the repo suffix.
     const sessionFolder = sessionState ? folderOf(sessionState) : undefined;
     const repo = sessionFolder ? folderBasename(sessionFolder) : undefined;
-    const msg = notificationMessage(agentName, status, repo, exitCode, waitingReason);
+    const msg = notificationMessage(agentName, status, repo, exitCode, waitingReason, detail);
     if (!msg) {
       return;
     }
 
     if (shouldNotify(status, isActive, settingOn)) {
-      const show = status === "failed"
+      const show = status === "error"
         ? (t: string, ...a: string[]) => vscode.window.showErrorMessage(t, ...a)
         : (t: string, ...a: string[]) => vscode.window.showInformationMessage(t, ...a);
       show(msg.text, msg.action).then((choice) => {
@@ -1310,12 +1208,57 @@ export class LifecycleContext {
     );
   }
 
-  /**
-   * The stable lifecycle session key for a terminal: its current alias if
-   * renamed, otherwise its frozen creation name.
-   */
+  /** Stable per-terminal key: display-name alias when renamed, else creation name. */
   private sessionKeyForTerminal(t: vscode.Terminal): string {
     return this.sessionAliases.get(t.name) ?? terminalCreationName(t);
+  }
+
+  private consumeOutput(terminal: vscode.Terminal, chunk: string, cwd?: string): void {
+    const session = this.sessionKeyForTerminal(terminal);
+    const state = this.sessions.get(session);
+    if (!state) return;
+    if (cwd) this.sessions.set(session, { ...state, cwd });
+    const parser = this.parsers.get(session) ?? new ProgramStatusParser();
+    this.parsers.set(session, parser);
+    const snapshot = parser.push(chunk);
+    const previousText = this.recentOutput.get(session) ?? "";
+    const output = (previousText + chunk).slice(-12000);
+    this.recentOutput.set(session, output);
+    if (snapshot) {
+      this.applyStatus(session, snapshot.status, "osc", {
+        blockedKind: snapshot.kind,
+        message: snapshot.msg,
+        title: snapshot.title,
+        app: snapshot.app,
+      });
+    } else if (!state.authoritative) {
+      const heuristic = detectHeuristicStatus(state.agentName, output);
+      if (heuristic) this.applyStatus(session, heuristic.status, "heuristic", { blockedKind: heuristic.reason });
+    }
+  }
+
+  private applyStatus(
+    session: string,
+    status: LifecycleStatus,
+    source: "osc" | "heuristic" | "exit",
+    details: Partial<SessionState> = {}
+  ): void {
+    const previous = this.sessions.get(session);
+    if (!previous || (previous.authoritative && source !== "osc")) return;
+    if (previous.status === "error" && status === "done") return;
+    const authoritative = source === "osc" || previous.authoritative;
+    if (previous.status === status && previous.message === details.message && previous.blockedKind === details.blockedKind) return;
+    const next = {
+      ...previous,
+      ...details,
+      status,
+      changedAt: Date.now(),
+      authoritative,
+      blockedKind: status === "blocked" ? details.blockedKind : undefined,
+    };
+    this.sessions.set(session, next);
+    this.refreshStatusBar();
+    if (previous.status !== status) this.maybeNotify(session, status, undefined, next.blockedKind, next.message ?? next.title);
   }
 
   /**
@@ -1334,234 +1277,24 @@ export class LifecycleContext {
      this.statusItem.tooltip = statusBarTooltip(states);
    }
 
-  /**
-   * Resolve a plugin-file agent's auto-load base dir, verifying the result is
-   * absolute **here at the sink**. Each adapter owns its own resolution rules
-   * (OpenCode's XDG lookup, pi's `PI_CODING_AGENT_DIR`), and each resolver
-   * already throws on a non-absolute result — but the invariant is re-asserted
-   * locally so a future refactor of any resolver can never let an env-derived
-   * relative path reach the path.join → filesystem-write below.
-   */
-  private pluginBaseDir(adapter: PluginFileAdapter): string {
-    const baseDir = adapter.resolveBaseDir(
-      PLUGIN_ENV_SNAPSHOT,
-      process.platform,
-      os.homedir()
-    );
-    if (!isAbsoluteForPlatform(baseDir, process.platform)) {
-      throw new Error(`${adapter.agentName} config dir must be absolute: ${baseDir}`);
-    }
-    return baseDir;
-  }
-
-  /**
-   * The absolute filesystem path we install/remove for an adapter — the JSON
-   * config for command-hook agents, the plugin/extension file for plugin-file
-   * agents. Command-hook paths are home-relative; a plugin path is relative to
-   * the base dir the adapter resolves per-platform (NOT a hardcoded
-   * `~/.config/opencode` — that's wrong on Windows and ignores the agents' own
-   * overrides).
-   */
-  private adapterFsPath(adapter: LifecycleAdapter): string {
-    if (adapter.kind === "command-hooks") {
-      return path.join(os.homedir(), adapter.configPath);
-    }
-    return path.join(this.pluginBaseDir(adapter), adapter.pluginPath);
-  }
-
-  /**
-   * A display path for the user. Command-hook adapters show `~/...`; a plugin
-   * file shows its resolved absolute path (which may not be under home on
-   * Windows or when the agent's config-dir override is set).
-   */
-  private adapterDisplayPath(adapter: LifecycleAdapter): string {
-    if (adapter.kind === "command-hooks") {
-      return `~/${adapter.configPath}`;
-    }
-    return path.join(this.pluginBaseDir(adapter), adapter.pluginPath);
-  }
-
-  /**
-   * Prompt once (ever) to install the lifecycle hook for an adapter, globally.
-   * Idempotent: remembered in globalState as "installed" or "declined", keyed by
-   * marker alone (no workspace) — so a fresh repo never re-prompts.
-   */
-  async maybePromptInstall(adapter: LifecycleAdapter): Promise<void> {
-    const flagKey = `hooks.${adapter.marker}.global`;
-    const flag = this.context.globalState.get<string>(flagKey);
-    if (flag === "installed" || flag === "declined") {
-      return;
-    }
-
-    const choice = await vscode.window.showInformationMessage(
-      `Get notified when ${adapter.agentName} finishes or needs input? Installs a lightweight ` +
-        `hook, removable anytime.`,
-      "Install",
-      "Not now"
-    );
-
-    if (choice === "Install") {
-      try {
-        await this.installHook(adapter);
-        this.context.globalState.update(flagKey, "installed");
-        vscode.window.showInformationMessage(
-          `Lifecycle hook installed in ${this.adapterDisplayPath(adapter)}.`
-        );
-      } catch (err) {
-        vscode.window.showErrorMessage(
-          `Failed to install lifecycle hook: ${err instanceof Error ? err.message : String(err)}`
-        );
-      }
-    } else {
-      this.context.globalState.update(flagKey, "declined");
-    }
-  }
-
-  /**
-   * Silently upgrade every already-installed lifecycle hook to the current
-   * {@link HOOK_SCHEMA_VERSION}, with no prompt. Called once from `activate()`
-   * on every window (cheap no-op once everything's current). Deliberately
-   * scoped to adapters the user already opted into: an adapter that was never
-   * installed, or whose install was explicitly declined, is left untouched —
-   * this is an upgrade path, not a way to sneak past a decline. Per-adapter
-   * failures are swallowed so one broken config can't block the others.
-   */
-  async autoUpgradeHooks(): Promise<void> {
+  /** Remove only Agent Quickpick-owned global hooks and plugins. */
+  async removeAllHooks(): Promise<string[]> {
+    const touched: string[] = [];
     for (const adapter of Object.values(LIFECYCLE_ADAPTERS)) {
-      const flagKey = `hooks.${adapter.marker}.global`;
-      if (this.context.globalState.get<string>(flagKey) !== "installed") {
+      const fsPath = adapter.kind === "command-hooks"
+        ? path.join(os.homedir(), adapter.configPath)
+        : path.join(adapter.resolveBaseDir(PLUGIN_ENV_SNAPSHOT, process.platform, os.homedir()), adapter.pluginPath);
+      if (adapter.kind === "plugin-file") {
+        if (!shouldRemovePluginFile(await readIfExists(fsPath), adapter.marker)) continue;
+        try { await fs.promises.unlink(fsPath); touched.push(fsPath); } catch { /* already removed */ }
         continue;
       }
       try {
-        await this.installHook(adapter);
-      } catch {
-        // Non-fatal — same posture as installHook's other callers.
-      }
-    }
-  }
-
-  /**
-   * Resolve the bound server URL. The port isn't known until the socket is
-   * listening, so this awaits the listening event rather than reading
-   * `server.address()` synchronously (which yields port 0).
-   */
-  hookUrl(): Promise<string> {
-    return this.serverUrlPromise;
-  }
-
-  /**
-   * Stable path (survives every restart, unlike the port itself) where the
-   * current server URL is persisted — see the constructor. Generated hook
-   * commands/plugin sources are given this exact path at install/upgrade time
-   * so they can find the live server even when their own frozen env var
-   * (`AQP_HOOK_URL`, baked into a terminal already open before a restart) is
-   * stale. Under `globalStorageUri` since that's the one directory this
-   * extension already owns per-install, independent of any workspace.
-   */
-  private portFilePath(): string {
-    return path.join(this.context.globalStorageUri.fsPath, "hook-server.json");
-  }
-
-  /**
-   * Write the hook into the adapter's global config / plugin file — installing
-   * fresh, or silently upgrading a stale install (written by an older
-   * extension version) to the current {@link HOOK_SCHEMA_VERSION}. Idempotent:
-   * a no-op when the current version is already present.
-   *
-   * Called both from the one-time install prompt ({@link maybePromptInstall})
-   * and from {@link autoUpgradeHooks} (which re-invokes it, unprompted, for
-   * every adapter the user already has installed — so a version bump reaches
-   * existing users on their next activation with no action on their part).
-   */
-  private async installHook(adapter: LifecycleAdapter): Promise<void> {
-    const fsPath = this.adapterFsPath(adapter);
-    const hookUrl = await this.hookUrl();
-    const portFilePath = this.portFilePath();
-
-    if (adapter.kind === "plugin-file") {
-      // The dirs we write into are shared — pi's `extensions/` in particular is
-      // where several other tools install their own integrations — so never
-      // clobber a file at our path that isn't ours.
-      if (!shouldWritePluginFile(await readIfExists(fsPath), adapter.marker)) {
-        vscode.window.showWarningMessage(
-          `${this.adapterDisplayPath(adapter)} already exists and wasn't written by ` +
-            `Agent Quickpick — leaving it alone. Delete or rename it to enable ` +
-            `${adapter.agentName} lifecycle notifications.`
-        );
-        return;
-      }
-      // Otherwise always regenerated — see buildOpenCodePluginSource's doc.
-      await fs.promises.mkdir(path.dirname(fsPath), { recursive: true });
-      const source = adapter.buildSource(hookUrl, "", portFilePath);
-      await writeFileAtomic(fsPath, source);
-      return;
-    }
-
-    // command-hooks: merge into the JSON config, preserving user content.
-    let existing: unknown = {};
-    try {
-      const text = await fs.promises.readFile(fsPath, "utf8");
-      existing = readConfigJson(text);
-    } catch {
-      // File doesn't exist yet — start from {}.
-    }
-    if (adapter.hasCurrentHooks(existing)) {
-      return; // already installed and current (idempotent)
-    }
-    // Strip a stale (older-schema) install of ours before re-merging the
-    // current form, so upgrading doesn't leave the old hook entries alongside
-    // the new ones.
-    const base = adapter.hasOurHooks(existing)
-      ? adapter.stripHooks(existing)
-      : existing;
-    const merged = adapter.mergeHooks(base, hookUrl, "", portFilePath);
-    await fs.promises.mkdir(path.dirname(fsPath), { recursive: true });
-    await writeFileAtomic(fsPath, writeConfigJson(merged));
-  }
-
-  /**
-   * Remove our hook from every adapter's global config / plugin file.
-   * Used by the `agentQuickpick.removeHooks` command. Also resets every
-   * adapter's install-prompt flag so the next launch re-prompts.
-   */
-  async removeAllHooks(): Promise<string[]> {
-    const touched: string[] = [];
-
-    for (const adapter of Object.values(LIFECYCLE_ADAPTERS)) {
-      const fsPath = this.adapterFsPath(adapter);
-
-      // Reset the install flag unconditionally — even when there is nothing to
-      // strip (user previously declined, or the files were deleted by hand) —
-      // otherwise a "declined" choice could never be undone via this command.
-      this.context.globalState.update(`hooks.${adapter.marker}.global`, undefined);
-
-      if (adapter.kind === "plugin-file") {
-        // Only unlink a file we can prove we wrote: a same-named plugin the
-        // user (or another tool) put there is theirs to delete, not ours.
-        if (!shouldRemovePluginFile(await readIfExists(fsPath), adapter.marker)) {
-          continue;
-        }
-        try {
-          await fs.promises.unlink(fsPath);
-          touched.push(this.adapterDisplayPath(adapter));
-        } catch {
-          // vanished between the read and the unlink — nothing to remove
-        }
-      } else {
-        let text: string;
-        try {
-          text = await fs.promises.readFile(fsPath, "utf8");
-        } catch {
-          continue; // file doesn't exist — skip
-        }
-        const parsed = readConfigJson(text);
-        if (!adapter.hasOurHooks(parsed)) {
-          continue;
-        }
-        const stripped = adapter.stripHooks(parsed);
-        await writeFileAtomic(fsPath, writeConfigJson(stripped));
-        touched.push(this.adapterDisplayPath(adapter));
-      }
+        const parsed = readConfigJson(await fs.promises.readFile(fsPath, "utf8"));
+        if (!adapter.hasOurHooks(parsed)) continue;
+        await writeFileAtomic(fsPath, writeConfigJson(adapter.stripHooks(parsed)));
+        touched.push(fsPath);
+      } catch { /* absent or unreadable config: preserve it */ }
     }
     return touched;
   }
@@ -1633,9 +1366,9 @@ export class LifecycleContext {
 
   dispose(): void {
     clearInterval(this.pollTimer);
+    this.outputDisposable.dispose();
     this.closeDisposable.dispose();
     this.agentsConfigDisposable.dispose();
-    this.server.dispose();
   }
 }
 
@@ -1682,12 +1415,10 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
-  // Lifecycle awareness — HTTP server for agent hooks, session tracking, live
-  // status-bar counts, and notification toasts. Owns its own poll timer.
+  // Lifecycle awareness — terminal output parsing, session tracking, live
+  // status-bar counts, and notifications. Owns its poll timer.
   lifecycleCtx = new LifecycleContext(context, statusItem);
-  // Null the module ref on dispose so post-dispose command calls (e.g.
-  // agentQuickpick.removeHooks) take their `if (!lifecycleCtx)` no-op path
-  // instead of routing into a disposed context.
+  // Clear the module ref on disposal.
   context.subscriptions.push({
     dispose: () => {
       lifecycleCtx?.dispose();
@@ -1695,10 +1426,8 @@ export function activate(context: vscode.ExtensionContext) {
     },
   });
 
-  // Re-adopt any agent terminals that survived a window reload, so lifecycle
-  // hooks/notifications keep working without a manual relaunch. Without this,
-  // the in-memory sessions Map starts empty on every reload and onHookEvent
-  // would drop every incoming POST — silently disabling all notifications.
+  // Re-adopt agent terminals that survived a window reload. Their status is
+  // unknown until new terminal evidence arrives.
   lifecycleCtx.seedFromOpenTerminals(
     new Set(
       loadAgents(
@@ -1781,9 +1510,6 @@ export function activate(context: vscode.ExtensionContext) {
   // Bring already-installed hooks up to the current schema, with no prompt —
   // so a version bump (new events, new URL-resolution strategy) reaches
   // existing users automatically. Non-fatal, never blocks activation.
-  lifecycleCtx.autoUpgradeHooks().catch(() => {
-    // upgrade failures are non-fatal
-  });
 
   context.subscriptions.push(
     // Clear pending launch-delay timers on deactivate so a deferred sendText

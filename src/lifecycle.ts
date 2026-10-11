@@ -21,12 +21,163 @@ import * as vscode from "vscode";
 // Types
 // ---------------------------------------------------------------------------
 
-export type LifecycleStatus =
-  | "running"
-  | "finished"
-  | "waiting"
-  | "failed"
-  | "unknown";
+export type LifecycleStatus = "idle" | "working" | "done" | "blocked" | "error" | "unknown";
+export type WaitingReason = "permission" | "question" | "auth";
+export type LegacyHookStatus = "running" | "finished" | "waiting" | "failed";
+type HookStatus = LifecycleStatus | LegacyHookStatus;
+
+export interface ProgramStatusRecord {
+  id?: string;
+  state: Exclude<LifecycleStatus, "unknown"> | "clear";
+  kind?: WaitingReason;
+  progress?: number;
+  app?: string;
+  title?: string;
+  msg?: string;
+}
+
+export interface ProgramStatusSnapshot {
+  records: ReadonlyMap<string, ProgramStatusRecord>;
+  status: LifecycleStatus;
+  kind?: WaitingReason;
+  msg?: string;
+  title?: string;
+  app?: string;
+}
+
+export const OSC7501_MAX_SEQUENCE = 4096;
+export const OSC7501_MAX_RECORDS = 256;
+const MAX_PENDING = OSC7501_MAX_SEQUENCE * 2;
+
+function decodeOscText(value: string, encodedLimit: number, decodedLimit: number): string | undefined {
+  if (value.length > encodedLimit || !/^[A-Za-z0-9+/]*={0,2}$/.test(value)) return undefined;
+  try {
+    const bytes = Buffer.from(value, "base64");
+    if (bytes.length > decodedLimit) return undefined;
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    return /[\u0000-\u001f\u007f-\u009f]/.test(text) ? undefined : text;
+  } catch { return undefined; }
+}
+
+export function parseProgramStatusBody(body: string): ProgramStatusRecord | "query" | undefined {
+  if (body === "?") return "query";
+  if (!body || body.startsWith("?") || Buffer.byteLength(body, "utf8") + 8 > OSC7501_MAX_SEQUENCE) return undefined;
+  const fields: Record<string, string> = {};
+  for (const item of body.split(":")) {
+    const at = item.indexOf("=");
+    if (at < 1) continue;
+    const key = item.slice(0, at).trim();
+    const value = item.slice(at + 1).trim();
+    if (/^[a-z]{1,16}$/.test(key) && /^[A-Za-z0-9_.,+/=-]*$/.test(value)) fields[key] = value;
+  }
+  const state = fields.state;
+  if (!state || !["idle", "working", "done", "blocked", "error", "clear"].includes(state)) return undefined;
+  const record: ProgramStatusRecord = { state: state as ProgramStatusRecord["state"] };
+  if (fields.id !== undefined) {
+    const parts = fields.id.split("/");
+    if (fields.id.length > 128 || parts.length > 8 || !parts.every((p) => /^[A-Za-z0-9_.+-]{1,32}$/.test(p))) return undefined;
+    record.id = fields.id;
+  }
+  if (fields.app !== undefined) {
+    if (!/^[A-Za-z0-9_.+-]{1,32}$/.test(fields.app)) return undefined;
+    record.app = fields.app;
+  }
+  if (fields.kind !== undefined) {
+    if (state !== "blocked" || !["permission", "question", "auth"].includes(fields.kind)) return undefined;
+    record.kind = fields.kind as WaitingReason;
+  }
+  if (fields.progress !== undefined && (state === "working" || state === "blocked")) {
+    if (!/^(?:100|[1-9]?\d)$/.test(fields.progress)) return undefined;
+    record.progress = Number(fields.progress);
+  }
+  if (fields.msg !== undefined) {
+    const msg = decodeOscText(fields.msg, 2732, 2048);
+    if (msg === undefined) return undefined;
+    record.msg = msg;
+  }
+  if (fields.title !== undefined) {
+    const title = decodeOscText(fields.title, 256, 192);
+    if (title === undefined) return undefined;
+    record.title = title;
+  }
+  return record;
+}
+
+/** Parses fragmented OSC 7501 output and maintains the bounded record set. */
+export class ProgramStatusParser {
+  private pending = "";
+  private readonly records = new Map<string, { value: ProgramStatusRecord; used: number }>();
+  private clock = 0;
+  private hasReported = false;
+  private wasCleared = false;
+
+  push(chunk: string): ProgramStatusSnapshot | undefined {
+    this.pending = (this.pending + chunk).slice(-MAX_PENDING);
+    let changed = false;
+    while (true) {
+      const start = this.pending.indexOf("\u001b]7501;");
+      if (start < 0) { this.pending = this.pending.slice(-7); break; }
+      const bodyStart = start + 7;
+      let end = -1;
+      let term = 0;
+      let nestedStart = -1;
+      for (let i = bodyStart; i < this.pending.length; i++) {
+        if (this.pending.startsWith("\u001b]7501;", i)) { nestedStart = i; break; }
+        if (this.pending.charCodeAt(i) === 7) { end = i; term = 1; break; }
+        if (this.pending.charCodeAt(i) === 27) {
+          if (i + 1 === this.pending.length) break;
+          if (this.pending.charCodeAt(i + 1) === 92) { end = i; term = 2; break; }
+        }
+      }
+      if (nestedStart >= 0) { this.pending = this.pending.slice(nestedStart); continue; }
+      if (end < 0) {
+        this.pending = this.pending.slice(start);
+        if (this.pending.length > OSC7501_MAX_SEQUENCE) {
+          const next = this.pending.indexOf("\u001b]7501;", 1);
+          this.pending = next >= 0 ? this.pending.slice(next) : "";
+          continue;
+        }
+        break;
+      }
+      const full = this.pending.slice(start, end + term);
+      const body = this.pending.slice(bodyStart, end);
+      this.pending = this.pending.slice(end + term);
+      const report = Buffer.byteLength(full, "utf8") <= OSC7501_MAX_SEQUENCE ? parseProgramStatusBody(body) : undefined;
+      if (!report || report === "query") continue;
+      this.hasReported = true;
+      const id = report.id ?? "";
+      if (report.state === "clear") {
+        this.wasCleared = id === "";
+        for (const key of this.records.keys()) if (!id || key === id || key.startsWith(`${id}/`)) this.records.delete(key);
+      } else {
+        this.wasCleared = false;
+        this.records.set(id, { value: report, used: ++this.clock });
+        if (this.records.size > OSC7501_MAX_RECORDS) {
+          const oldest = [...this.records].sort((a, b) => a[1].used - b[1].used)[0];
+          if (oldest) this.records.delete(oldest[0]);
+        }
+      }
+      changed = true;
+    }
+    return changed ? this.snapshot() : undefined;
+  }
+
+  snapshot(): ProgramStatusSnapshot {
+    const records = new Map<string, ProgramStatusRecord>();
+    for (const [id, entry] of this.records) records.set(id, { ...entry.value });
+    const rank: Record<ProgramStatusRecord["state"], number> = { blocked: 0, error: 1, working: 2, done: 3, idle: 4, clear: 5 };
+    const selected = [...records.entries()]
+      .filter(([, record]) => record.state !== "clear")
+      .sort((a, b) => rank[a[1].state] - rank[b[1].state])[0];
+    if (!selected) return { records, status: this.wasCleared ? "unknown" : this.hasReported ? "idle" : "unknown" };
+    const [id, record] = selected;
+    let app = record.app;
+    const segments = id.split("/");
+    while (!app && segments.length) { segments.pop(); app = records.get(segments.join("/"))?.app; }
+    return { records, status: record.state === "clear" ? "unknown" : record.state, kind: record.kind, msg: record.msg, title: record.title, app };
+  }
+}
+
 
 /**
  * Human labels for each lifecycle status, using Herdr's vocabulary. Shared by
@@ -36,20 +187,12 @@ export type LifecycleStatus =
  * its state, we don't claim it's working.
  */
 export const STATUS_LABEL: Record<LifecycleStatus, string> = {
-  running: "working",
-  finished: "done",
-  waiting: "blocked",
-  failed: "failed",
-  unknown: "reconnecting",
+  idle: "idle", working: "working", done: "done", blocked: "blocked", error: "error", unknown: "unknown",
 };
 
 /** Compact glyph per status, matching {@link statusBarText}. */
 export const STATUS_GLYPH: Record<LifecycleStatus, string> = {
-  running: "●",
-  finished: "✓",
-  waiting: "⏸",
-  failed: "✗",
-  unknown: "○",
+  idle: "○", working: "●", done: "✓", blocked: "⏸", error: "✗", unknown: "?",
 };
 
 /**
@@ -64,8 +207,6 @@ export const STATUS_GLYPH: Record<LifecycleStatus, string> = {
  *   OpenCode-only (`question.asked`); Claude's Notification hook does not
  *   distinguish this from a plain idle wait.
  */
-export type WaitingReason = "permission" | "question";
-
 export interface SessionState {
   /** Terminal tab name, e.g. "Claude" or "Codex (2)". */
   name: string;
@@ -102,6 +243,11 @@ export interface SessionState {
    * wait.
    */
   waitingReason?: WaitingReason;
+  blockedKind?: WaitingReason;
+  message?: string;
+  title?: string;
+  app?: string;
+  authoritative?: boolean;
 }
 
 /**
@@ -109,11 +255,9 @@ export interface SessionState {
  * Agents that lack a field send it unset; we read defensively.
  */
 export interface HookPayload {
-  /** Marker identifying which adapter produced this hook. */
   marker?: string;
-  /** The session/tab name to update (injected into the terminal's env). */
   session?: string;
-  status?: LifecycleStatus;
+  status?: LifecycleStatus | "running" | "finished" | "waiting" | "failed";
   agentName?: string;
   /**
    * The agent's current working directory, when the agent's hook payload
@@ -431,7 +575,7 @@ export function buildNodeHookCommand(
   hookUrl: string,
   session: string,
   marker: string,
-  status: LifecycleStatus,
+  status: HookStatus,
   portFilePath: string,
   spec: HookReportSpec = {}
 ): string {
@@ -721,7 +865,7 @@ export interface NamedHookEventSpec {
    */
   matcher?: string;
   /** Fallback status for the generated command (see {@link HookReportSpec}). */
-  status: LifecycleStatus;
+  status: HookStatus;
   /** How the generated command computes the report it POSTs. */
   spec?: HookReportSpec;
 }
@@ -889,7 +1033,7 @@ export function hasCurrentNamedHooks(
  * typed signal — so the hook reports the waiting *reason* directly instead of
  * relying on free-text classification downstream.
  */
-function reportsForEvent(event: string): { status: LifecycleStatus; spec?: HookReportSpec }[] {
+function reportsForEvent(event: string): { status: HookStatus; spec?: HookReportSpec }[] {
   switch (event) {
     case "Stop":
       return [{ status: "finished" }];
@@ -913,11 +1057,7 @@ function reportsForEvent(event: string): { status: LifecycleStatus; spec?: HookR
 /** Tally an array of session states into a count-per-status map. */
 export function countByStatus(states: SessionState[]): Record<LifecycleStatus, number> {
   const counts: Record<LifecycleStatus, number> = {
-    running: 0,
-    finished: 0,
-    waiting: 0,
-    failed: 0,
-    unknown: 0,
+    idle: 0, working: 0, done: 0, blocked: 0, error: 0, unknown: 0,
   };
   for (const s of states) {
     counts[s.status]++;
@@ -935,11 +1075,12 @@ export function countByStatus(states: SessionState[]): Record<LifecycleStatus, n
 export function statusBarText(counts: Record<LifecycleStatus, number>): string {
   const glyph = "$(agent-quickpick)";
   const parts: string[] = [];
-  if (counts.running > 0) parts.push(`${counts.running}●`);
-  if (counts.finished > 0) parts.push(`${counts.finished}✓`);
-  if (counts.waiting > 0) parts.push(`${counts.waiting}⏸`);
-  if (counts.failed > 0) parts.push(`${counts.failed}✗`);
-  if (counts.unknown > 0) parts.push(`${counts.unknown}○`);
+  if (counts.blocked > 0) parts.push(`${counts.blocked}⏸`);
+  if (counts.error > 0) parts.push(`${counts.error}✗`);
+  if (counts.done > 0) parts.push(`${counts.done}✓`);
+  if (counts.working > 0) parts.push(`${counts.working}●`);
+  if (counts.idle > 0) parts.push(`${counts.idle}○`);
+  if (counts.unknown > 0) parts.push(`${counts.unknown}?`);
 
   if (parts.length === 0) {
     return `${glyph} Agent`;
@@ -964,7 +1105,7 @@ export function statusBarTooltip(states: SessionState[]): string {
       const folder = folderOf(s);
       const suffix = folder ? ` · ${folderBasename(folder)}` : "";
       const label =
-        s.status === "waiting" ? waitingLabel(s.waitingReason) : STATUS_LABEL[s.status];
+        s.status === "blocked" ? waitingLabel(s.blockedKind) : STATUS_LABEL[s.status];
       return `${s.name} — ${label}${suffix}`;
     })
     .join("\n");
@@ -1012,11 +1153,7 @@ export function filterSessionsByFolder(
  * `unknown` isn't a state we can honestly announce. Shared by the toast, the
  * OS notification, and the sound so the three never drift apart.
  */
-const ANNOUNCED_STATUSES: readonly LifecycleStatus[] = [
-  "finished",
-  "waiting",
-  "failed",
-];
+const ANNOUNCED_STATUSES: readonly LifecycleStatus[] = ["done", "blocked", "error"];
 
 /** True if this status is one we announce (toast / OS notification / sound). */
 export function isAnnouncedStatus(status: LifecycleStatus): boolean {
@@ -1232,27 +1369,21 @@ export function sanitizeArgvText(value: string): string {
  * Build the OS-notification command for a platform, or `null` where we have no
  * native channel (then the toast + sound still fire).
  *
- * - **macOS**: `terminal-notifier` when the caller found it, falling back to
- *   `osascript`. The resolver (`notifierCandidates`) prefers a user-installed
- *   `terminal-notifier` and otherwise uses the universal `.app` bundled with the
- *   extension, so a fresh install still gets an attributed banner; `osascript`
- *   is now only a rare last resort (bundle missing or unreadable). A bare
- *   `display notification` is attributed to whatever app *ran* the script —
- *   Script Editor, whose grey icon lands on the banner and whose folder opens in
- *   Finder when you click it. `terminal-notifier` fixes both: `-sender` puts the
- *   editor's icon on the banner, and `-open <focusUri>` routes the click to our
- *   URI handler, which focuses that agent's specific terminal. The click is also
- *   what raises the editor window: opening the `<scheme>://` URL hands it to
- *   LaunchServices, which activates the editor that registered the scheme — so
- *   the window comes forward, then the handler reveals the session. We only use
- *   `-sender` when there is no focus URI; when `-sender` attributes the banner to
- *   another app, macOS commonly swallows the `-open`/`-execute` click action and
- *   the notification becomes non-clickable. Re-attributing via AppleScript instead
- *   (`tell application id ... to display notification`) is *not* an option: it
- *   sends an Apple event, which triggers a TCC automation-consent prompt and
- *   blocks `osascript` indefinitely until it's answered. The fallback passes
- *   title/body through an `on run argv` wrapper so they are arguments, never
- *   spliced into the AppleScript source.
+ * - **macOS**: `terminal-notifier`, using the resolver's user-installed copy or
+ *   the universal `.app` bundled with the extension — never `osascript`. A bare
+ *   `display notification` is attributed to whatever app *ran* the script,
+ *   Script Editor, whose grey scroll icon lands on the banner and whose click
+ *   opens Finder on a script URL instead of the editor. That is exactly the
+ *   "Script Editor notification / weird script address" failure users hit on
+ *   desktop editor builds whose bundle id we cannot read, so the AppleScript
+ *   path is gone entirely. `-open <focusUri>` routes the click to our URI
+ *   handler, which focuses that agent's specific terminal, and it needs no
+ *   bundle id at all: opening the `<scheme>://` URL hands it to LaunchServices,
+ *   which raises whichever editor registered the scheme. `-sender` (the editor's
+ *   icon) is used only for the bundle-id case with no focus URI, because macOS
+ *   commonly swallows `-open` when the banner is attributed to another app. When
+ *   neither applies, or the notifier cannot launch, the OS banner is skipped and
+ *   the in-editor toast still fires — better than a misleading Script Editor one.
  * - **Linux**: `notify-send` (argv, nothing to escape).
  * - **Windows**: PowerShell raising a real WinRT toast, reading title/body from
  *   env vars. The AUMID is PowerShell's own registered id — an unregistered
@@ -1268,41 +1399,27 @@ export function systemNotifyCommand(
   const safeBody = sanitizeArgvText(body);
   switch (platform) {
     case "darwin": {
-      const osa: SpawnSpec = {
-        file: "osascript",
-        args: [
-          "-e",
-          "on run argv",
-          "-e",
-          "display notification (item 1 of argv) with title (item 2 of argv)",
-          "-e",
-          "end run",
-          safeBody,
-          safeTitle,
-        ],
-      };
       const { bundleId, notifierPath, openUrl } = target;
-      if (!bundleId || !isSafeBundleId(bundleId)) {
-        return osa;
-      }
       // A click follows -open when we have a focus URI (focuses the exact
-      // terminal), otherwise -activate (raises the editor). Both beat Script
-      // Editor. We deliberately do NOT combine -sender with -open: when macOS
-      // attributes a notification to another app via -sender, it commonly ignores
-      // -open/-execute and the click becomes a no-op. When there is no URI we
-      // still use -sender so the banner wears the editor's icon and a click at
-      // least raises the editor.
+      // terminal, and works without any bundle id — the fix for desktop editor
+      // forks that report no readable bundle), otherwise -sender -activate to at
+      // least raise the editor. We deliberately do NOT combine -sender with
+      // -open: when macOS attributes a notification to another app via -sender,
+      // it commonly ignores -open/-execute and the click becomes a no-op. When
+      // neither is available the banner is skipped rather than handed to
+      // osascript, which macOS credits to Script Editor (clicking it opens Finder
+      // on a script URL). The toast + sound still fire.
       const args = ["-title", safeTitle, "-message", safeBody];
       if (openUrl) {
         args.push("-open", openUrl);
-      } else {
+      } else if (bundleId && isSafeBundleId(bundleId)) {
         args.push("-sender", bundleId, "-activate", bundleId);
+      } else {
+        return null;
       }
       return {
         file: notifierPath ?? "terminal-notifier",
         args,
-        // ENOENT (not installed) → the unattributed AppleScript banner.
-        fallback: osa,
       };
     }
     case "linux":
@@ -1398,24 +1515,23 @@ export const SOUND_FILE_DEFAULT = "media/sounds/notif.wav";
  */
 export function notificationMessage(
   agentName: string,
-  status: LifecycleStatus,
+  status: LifecycleStatus | LegacyHookStatus,
   repo?: string,
   exitCode?: number,
-  reason?: WaitingReason
+  reason?: WaitingReason,
+  detail?: string
 ): { text: string; action: string } | null {
   const suffix = repo && repo.trim() !== "" ? ` · ${repo.trim()}` : "";
+  const cleanDetail = detail?.replace(/[\u0000-\u001f\u007f-\u009f]/g, "").slice(0, 160);
+  const extra = cleanDetail ? ` · ${cleanDetail}` : "";
   switch (status) {
-    case "finished":
-      return { text: `${STATUS_GLYPH.finished} ${agentName} finished${suffix}`, action: "Show" };
-    case "waiting":
-      return {
-        text: `${STATUS_GLYPH.waiting} ${waitingHeadline(agentName, reason)}${suffix}`,
-        action: "Show",
-      };
-    case "failed": {
-      const codeSuffix =
-        typeof exitCode === "number" ? `${suffix} · exit ${exitCode}` : suffix;
-      return { text: `${STATUS_GLYPH.failed} ${agentName} crashed${codeSuffix}`, action: "Show" };
+    case "done":
+      return { text: `${STATUS_GLYPH.done} ${agentName} done${extra}${suffix}`, action: "Show" };
+    case "blocked":
+      return { text: `${STATUS_GLYPH.blocked} ${waitingHeadline(agentName, reason)}${extra}${suffix}`, action: "Show" };
+    case "error": {
+      const codeSuffix = typeof exitCode === "number" ? `${suffix} · exit ${exitCode}` : suffix;
+      return { text: `${STATUS_GLYPH.error} ${agentName} error${extra}${codeSuffix}`, action: "Show" };
     }
     default:
       return null;
@@ -1447,12 +1563,10 @@ export function classifyWaitingMessage(message: unknown): WaitingReason | undefi
  */
 export function waitingHeadline(agentName: string, reason?: WaitingReason): string {
   switch (reason) {
-    case "permission":
-      return `${agentName} wants to run a command — approve?`;
-    case "question":
-      return `${agentName} asked a question — needs your answer`;
-    default:
-      return `${agentName} needs your input`;
+    case "permission": return `${agentName} is blocked on permission`;
+    case "question": return `${agentName} is blocked on a question`;
+    case "auth": return `${agentName} is blocked on authentication`;
+    default: return `${agentName} is blocked`;
   }
 }
 
@@ -1462,12 +1576,10 @@ export function waitingHeadline(agentName: string, reason?: WaitingReason): stri
  */
 export function waitingLabel(reason?: WaitingReason): string {
   switch (reason) {
-    case "permission":
-      return "wants a command approved";
-    case "question":
-      return "asked a question";
-    default:
-      return STATUS_LABEL.waiting;
+    case "permission": return "blocked · permission";
+    case "question": return "blocked · question";
+    case "auth": return "blocked · auth";
+    default: return STATUS_LABEL.blocked;
   }
 }
 
@@ -1554,7 +1666,7 @@ export function startLifecycleServer(
 
 /** A terminal whose process has exited, reported by {@link pollExitStatuses}. */
 export interface PolledExit {
-  status: "finished" | "failed";
+  status: "done" | "error";
   /** The raw exit code from `vscode.Terminal.exitStatus`, when available. */
   exitCode?: number;
 }
@@ -1586,6 +1698,27 @@ export function terminalCreationName(t: vscode.Terminal): string {
  * @returns a map of terminal name → {status, exitCode} for terminals whose
  *          process has exited (exitStatus defined) but aren't already marked.
  */
+export function detectHeuristicStatus(agentName: string, output: string): { status: LifecycleStatus; reason?: WaitingReason } | undefined {
+  const recent = output.slice(-12000);
+  const lower = recent.toLowerCase();
+  const name = agentName.toLowerCase();
+  if (name.includes("claude") || name.includes("droid")) {
+    if (/^\s*do you want to proceed\?\s*$/m.test(lower) || /waiting for permission|needs your permission/.test(lower)) return { status: "blocked", reason: "permission" };
+    if (/esc to interrupt/.test(lower) || /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(recent.slice(-512))) return { status: "working" };
+    if (/^\s*❯\s*$/m.test(recent.slice(-1500))) return { status: "idle" };
+  }
+  if (name === "codex") {
+    if (/allow command\?|press enter to confirm|trust this folder\?|action required/.test(lower)) return { status: "blocked", reason: "permission" };
+    if (/(?:^| )[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏](?: |$)/.test(recent.slice(-1000)) || /\([0-9]+s(?: • .* to interrupt)?\)/.test(lower.slice(-2000))) return { status: "working" };
+    if (/^›\s*$/m.test(recent.slice(-1000))) return { status: "idle" };
+  }
+  if (name === "opencode") {
+    if (/△ permission required|esc dismiss.*enter confirm/.test(lower)) return { status: "blocked", reason: "permission" };
+    if (/esc to interrupt|ctrl\+c to interrupt|press esc to interrupt/.test(lower) || /(?:■|⬝){4,}/.test(lower)) return { status: "working" };
+  }
+  return undefined;
+}
+
 export function pollExitStatuses(
   terminals: readonly vscode.Terminal[],
   sessions: Map<string, SessionState>,
@@ -1602,9 +1735,9 @@ export function pollExitStatuses(
     // Skip sessions already in a final state (finished/failed). Everything
     // else — including `unknown` (re-adopted after a host reload) — is polled
     // so its real status is discovered once the process has exited.
-    if (prev && (prev.status === "finished" || prev.status === "failed")) continue;
+    if (prev && (prev.status === "done" || prev.status === "error")) continue;
     result.set(t.name, {
-      status: exit.code === 0 ? "finished" : "failed",
+      status: exit.code === 0 ? "done" : "error",
       exitCode: exit.code,
     });
   }

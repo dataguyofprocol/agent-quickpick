@@ -18,7 +18,6 @@ import {
   FOCUS_URI_SESSION_PARAM,
   isSafeBundleId,
   sanitizeArgvText,
-  HOOK_ENV,
 } from "../../lifecycle";
 
 suite("sanitizeArgvText", () => {
@@ -90,15 +89,6 @@ suite("isSafeBundleId", () => {
     // 1 leading char + up to 127 more = 128 max.
     assert.strictEqual(isSafeBundleId("a".repeat(128)), true);
     assert.strictEqual(isSafeBundleId("a".repeat(129)), false);
-  });
-});
-
-suite("HOOK_ENV", () => {
-  test("carries exactly the two injected env vars", () => {
-    assert.deepStrictEqual(HOOK_ENV("http://127.0.0.1:4242", "Claude (2)"), {
-      AQP_HOOK_URL: "http://127.0.0.1:4242",
-      AQP_SESSION: "Claude (2)",
-    });
   });
 });
 
@@ -179,30 +169,30 @@ suite("systemNotifyCommand", () => {
   const TITLE = "Agent Quickpick";
   // Hostile text: a session/repo name can legitimately contain these.
   // sanitizeArgvText strips shell metacharacters while keeping readable text.
-  const BODY = '✓ Claude finished · "(id)" whoami  \'x\'';
+  const BODY = '✓ Claude done · "(id)" whoami  \'x\'';
 
-  test("darwin without a bundle id passes body/title as argv, never spliced into AppleScript", () => {
-    const spec = systemNotifyCommand("darwin", TITLE, BODY);
-    assert.ok(spec);
-    assert.strictEqual(spec!.file, "osascript");
-    // The user-derived strings appear as standalone argv entries...
-    assert.ok(spec!.args.includes(BODY), "body should be its own argv entry");
-    assert.ok(spec!.args.includes(TITLE), "title should be its own argv entry");
-    // ...and the script fragments reference argv, not the text itself.
-    const script = spec!.args.filter((a) => a !== BODY && a !== TITLE).join(" ");
-    assert.ok(script.includes("item 1 of argv"));
-    assert.ok(script.includes("item 2 of argv"));
-    assert.ok(!script.includes("$(id)"), "no user text inside the script");
-  });
-
-  test("darwin with a bundle id prefers terminal-notifier, falls back to osascript", () => {
-    const spec = systemNotifyCommand("darwin", TITLE, BODY, {
-      bundleId: "com.microsoft.VSCode",
-    });
+  test("darwin without bundle id still uses the notifier when a focus URI is available", () => {
+    const uri = "deepseek://pub.agent-quickpick/focus?session=Claude";
+    const spec = systemNotifyCommand("darwin", TITLE, BODY, { openUrl: uri });
     assert.ok(spec);
     assert.strictEqual(spec!.file, "terminal-notifier");
-    // -sender fixes the banner icon, -activate makes a click raise the editor.
-    assert.deepStrictEqual(spec!.args, [
+    assert.ok(spec!.args.includes(BODY), "body should be its own argv entry");
+    assert.ok(spec!.args.includes(TITLE), "title should be its own argv entry");
+    assert.strictEqual(spec!.args[spec!.args.indexOf("-open") + 1], uri);
+  });
+
+  test("darwin never falls back to osascript (Script Editor banner + Finder click)", () => {
+    // No focus URI and no safe bundle id: skip the OS banner instead of handing
+    // it to osascript, which macOS credits to Script Editor.
+    assert.strictEqual(systemNotifyCommand("darwin", TITLE, BODY), null);
+    assert.strictEqual(systemNotifyCommand("darwin", TITLE, BODY, { bundleId: "com.microsoft.VSCode" })?.fallback, undefined);
+  });
+
+  test("darwin with a bundle id uses terminal-notifier's editor attribution", () => {
+    const spec = systemNotifyCommand("darwin", TITLE, BODY, { bundleId: "com.microsoft.VSCode" });
+    assert.strictEqual(spec?.file, "terminal-notifier");
+    assert.ok(spec?.args.includes(BODY));
+    assert.deepStrictEqual(spec?.args, [
       "-title",
       TITLE,
       "-message",
@@ -212,8 +202,6 @@ suite("systemNotifyCommand", () => {
       "-activate",
       "com.microsoft.VSCode",
     ]);
-    // Not installed (ENOENT) must still produce a banner.
-    assert.strictEqual(spec!.fallback?.file, "osascript");
   });
 
   test("darwin uses the resolved notifier path, not the bare name", () => {
@@ -231,24 +219,23 @@ suite("systemNotifyCommand", () => {
       bundleId: "com.microsoft.VSCode",
       openUrl: uri,
     });
+    assert.strictEqual(spec!.file, "terminal-notifier");
     assert.ok(spec!.args.includes("-open"));
     assert.strictEqual(spec!.args[spec!.args.indexOf("-open") + 1], uri);
-    // -sender must not be combined with -open; macOS swallows the click when the
-    // notification is attributed to another app.
-    assert.ok(!spec!.args.includes("-sender"));
-    assert.ok(!spec!.args.includes("-activate"));
   });
 
-  test("darwin rejects an unsafe bundle id rather than splicing it", () => {
+  test("darwin rejects an unsafe bundle id unless focus-URI routing is available", () => {
     const evil = 'com.x" to do shell script "id';
     assert.strictEqual(isSafeBundleId(evil), false);
     assert.strictEqual(isSafeBundleId("com.microsoft.VSCode-insiders"), true);
-    const spec = systemNotifyCommand("darwin", TITLE, BODY, { bundleId: evil });
-    assert.strictEqual(spec!.file, "osascript");
-    assert.ok(
-      !spec!.args.join(" ").includes("do shell script"),
-      "unsafe id must not reach the script or argv"
-    );
+    // Unsafe id, no URI → no banner at all (never spliced, never osascript).
+    assert.strictEqual(systemNotifyCommand("darwin", TITLE, BODY, { bundleId: evil }), null);
+    // Unsafe id, but a focus URI lets the click route without any attribution.
+    const uri = "deepseek://pub.agent-quickpick/focus?session=Claude";
+    const spec = systemNotifyCommand("darwin", TITLE, BODY, { bundleId: evil, openUrl: uri });
+    assert.strictEqual(spec!.file, "terminal-notifier");
+    assert.ok(!spec!.args.includes(evil), "unsafe id must not reach argv");
+    assert.ok(!spec!.args.includes("-sender"), "unsafe id must not be used for attribution");
   });
 
   test("linux uses notify-send with argv", () => {
