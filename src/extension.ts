@@ -796,11 +796,34 @@ const notifierPath = (() => {
  * this URI on click is also what raises the editor window: LaunchServices
  * activates the app that registered the scheme.
  */
-function focusUri(extensionId: string, session: string): string {
-  const q = new URLSearchParams({
-    [FOCUS_URI_SESSION_PARAM]: session,
+function focusUri(extensionId: string, session: string): vscode.Uri {
+  // Built from parts, not parsed: `Uri.parse` would decode the query's own
+  // percent-escapes, so a session name containing `&` or `=` wouldn't survive.
+  return vscode.Uri.from({
+    scheme: vscode.env.uriScheme,
+    authority: extensionId,
+    path: FOCUS_URI_PATH,
+    query: new URLSearchParams({ [FOCUS_URI_SESSION_PARAM]: session }).toString(),
   });
-  return `${vscode.env.uriScheme}://${extensionId}${FOCUS_URI_PATH}?${q.toString()}`;
+}
+
+/**
+ * {@link focusUri}, stamped so a click comes back to *this* window.
+ *
+ * The OS hands a URI to the editor app, which by default delivers it to the
+ * most recently focused window — with several windows open, usually one that
+ * doesn't own the terminal (and may own a different one with the same name).
+ * For the editor's own scheme, `asExternalUri` appends `windowId=<this window>`,
+ * which the main process's URL router uses to deliver the URI to that window
+ * (verified in VS Code and Trae). Falls back to the plain URI if it fails.
+ */
+export async function windowFocusUri(extensionId: string, session: string): Promise<string> {
+  const plain = focusUri(extensionId, session);
+  try {
+    return (await vscode.env.asExternalUri(plain)).toString();
+  } catch {
+    return plain.toString();
+  }
 }
 
 /**
@@ -1142,12 +1165,14 @@ export class LifecycleContext {
       // Sanitize the rendered body in this file as well so static taint is killed
       // before it reaches the subprocess helper.
       const safeBody = sanitizeArgvText(msg.text);
-      fireAndForget(
-        systemNotifyCommand(process.platform, "Agent Quickpick", safeBody, {
-          bundleId: hostBundleId(),
-          notifierPath: notifierPath(this.context.extensionPath),
-          openUrl: focusUri(this.context.extension.id, transition.session),
-        })
+      void windowFocusUri(this.context.extension.id, transition.session).then((openUrl) =>
+        fireAndForget(
+          systemNotifyCommand(process.platform, "Agent Quickpick", safeBody, {
+            bundleId: hostBundleId(),
+            notifierPath: notifierPath(this.context.extensionPath),
+            openUrl,
+          })
+        )
       );
     }
 

@@ -4,6 +4,13 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.1] — 2026-10-11
+
+### Fixed
+- **Quitting an agent no longer notifies "done".** `/q`, `/exit` or Ctrl-D from an idle agent (fresh, or after interrupting a turn) used to fire a done alert. A clean exit now alerts only when the agent was mid-task (it had reported working or blocked, or an approval prompt was showing); otherwise the status updates silently. A crash still always alerts.
+- **Clicking an OS notification focuses the right window.** With several editor windows open, the click was delivered to the most recently focused window, which usually didn't own the agent's terminal (or opened a same-named terminal from another project). The click URI now carries its window's id, so the editor routes it back to the window that posted it. Session names containing `&` or `=` also survive the round trip now.
+- The packaged extension no longer includes local benchmark results.
+
 ## [0.14.0] — 2026-10-11
 
 ### Added

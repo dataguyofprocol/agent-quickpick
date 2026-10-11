@@ -156,9 +156,10 @@ suite("SessionTracker: fallback ladder", () => {
 });
 
 suite("SessionTracker: process lifetime", () => {
-  test("exit 0 is done and alerts; non-zero is error and alerts", () => {
+  test("exit 0 mid-task is done and alerts; non-zero is error and alerts", () => {
     const clean = makeTracker();
-    const done = clean.execEnd("Claude", 0, LIVE);
+    clean.output("Claude", osc("state=working"), LIVE);
+    const done = clean.execEnd("Claude", 0, LIVE + 500);
     assert.strictEqual(done[0].status, "done");
     assert.strictEqual(done[0].source, "exit");
     assert.strictEqual(done[0].notify, true);
@@ -168,6 +169,30 @@ suite("SessionTracker: process lifetime", () => {
     const error = crashed.execEnd("Claude", 1, LIVE);
     assert.strictEqual(error[0].status, "error");
     assert.strictEqual(error[0].exitCode, 1);
+    assert.strictEqual(error[0].notify, true);
+  });
+
+  test("quitting an agent at rest records done without an alert", () => {
+    // The user typed /q or /exit: they are looking at it. Each case: the state
+    // the session was in when the clean exit arrived.
+    const atRest: [string, (t: SessionTracker) => void][] = [
+      ["never reported", () => {}],
+      ["protocol idle (fresh, or after an interrupt)", (t) => t.output("Claude", osc("state=idle"), LIVE)],
+      ["activity-only working (the quit's own redraw)", (t) => t.output("Claude", "bye\n", LIVE)],
+    ];
+    for (const [label, setup] of atRest) {
+      const tracker = makeTracker();
+      setup(tracker);
+      const transitions = tracker.execEnd("Claude", 0, LIVE + 400);
+      assert.strictEqual(tracker.get("Claude")?.status, "done", label);
+      assert.ok(transitions.every((t) => !t.notify), `${label}: no alert`);
+    }
+  });
+
+  test("a clean exit while blocked on a visible prompt still alerts", () => {
+    const tracker = makeTracker();
+    tracker.output("Claude", osc("state=blocked:kind=permission"), LIVE);
+    assert.strictEqual(tracker.execEnd("Claude", 0, LIVE + 5_000)[0].notify, true);
   });
 
   test("a crash is reported even when the agent last said it was working", () => {

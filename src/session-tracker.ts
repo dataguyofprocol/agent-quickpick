@@ -321,11 +321,23 @@ export class SessionTracker {
       }
       return [];
     }
+    // A clean exit is only news when the agent was mid-task (a one-shot run
+    // finishing on its own). From rest it is the user quitting — `/q`, `/exit`,
+    // Ctrl-D — and they are looking right at it. "Mid-task" needs evidence: a
+    // protocol report, or a visible approval prompt. Activity-derived `working`
+    // doesn't count, since typing the quit command and the redraw are output too.
+    const midTask =
+      (entry.state.source === "osc" &&
+        (entry.state.status === "working" || entry.state.status === "blocked")) ||
+      (entry.state.source === "heuristic" && entry.state.status === "blocked");
     return this.commit(
       entry,
       { status: exitCode === 0 ? "done" : "error", source: "exit" },
       now,
-      { ...(exitCode !== undefined ? { exitCode } : {}) }
+      {
+        ...(exitCode !== undefined ? { exitCode } : {}),
+        ...(exitCode === 0 && !midTask ? { silent: true } : {}),
+      }
     );
   }
 
@@ -427,7 +439,7 @@ export class SessionTracker {
     entry: Tracked,
     next: { status: LifecycleStatus; source: SessionSource },
     now: number,
-    fields: StatusFields & { visibleBlocker?: boolean } = {}
+    fields: StatusFields & { visibleBlocker?: boolean; silent?: boolean } = {}
   ): SessionTransition[] {
     const previous = entry.state;
     const blockedKind = next.status === "blocked" ? fields.blockedKind : undefined;
@@ -487,7 +499,7 @@ export class SessionTracker {
         next.source === "osc" ||
         next.source === "exit" ||
         (next.source === "heuristic" && fields.visibleBlocker === true);
-      if (trusted && now - entry.lastNotifyAt >= NOTIFY_MIN_INTERVAL_MS) {
+      if (trusted && !fields.silent && now - entry.lastNotifyAt >= NOTIFY_MIN_INTERVAL_MS) {
         transition.notify = true;
         entry.lastNotifyAt = now;
       }

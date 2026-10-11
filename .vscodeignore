@@ -19,3 +19,4 @@ out/test/**
 .mimosa/**
 AGENTS.md
 MAINTAINERS.md
+bench-results/**
