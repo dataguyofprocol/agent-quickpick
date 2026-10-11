@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.2] — 2026-10-11
+
+### Fixed
+- An unanswered permission prompt no longer triggers repeated notifications on terminal redraws. A heuristic blocker stays blocked while the prompt is being repainted, rather than briefly becoming working and alerting again. Once the prompt disappears and output settles, tracking resumes; a later permission request can still alert. Protocol reports and process exits still update status immediately.
+
 ## [0.14.1] — 2026-10-11
 
 ### Fixed

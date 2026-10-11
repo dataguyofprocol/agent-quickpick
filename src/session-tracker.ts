@@ -388,6 +388,10 @@ export class SessionTracker {
 
     // 3. Heuristics.
     if (!this.fallback) return [];
+    // A prompt can disappear briefly between the erase and repaint chunks.
+    // Output alone doesn't resolve an existing blocker; wait for the redraw
+    // to settle before deciding whether the prompt is still there.
+    if (entry.state.status === "blocked" && now - entry.lastChunkAt < BLOCKED_QUIET_MS) return [];
     const manifest = manifestFor(entry.state.agentName, this.manifests);
     const title = entry.signals.title();
     const progress = entry.signals.progress(now);

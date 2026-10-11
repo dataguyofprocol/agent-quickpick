@@ -129,6 +129,63 @@ suite("SessionTracker: fallback ladder", () => {
     assert.strictEqual(settled[0].notify, true, "a blocker rule may alert");
   });
 
+  test("an unanswered Codex permission prompt alerts once across repeated redraws", () => {
+    const tracker = makeTracker("Codex");
+    const transitions = [];
+    transitions.push(...tracker.output("Codex", title("Codex action required"), LIVE));
+    transitions.push(...tracker.tick(LIVE + BLOCKED_QUIET_MS + 1));
+    assert.strictEqual(tracker.get("Codex")?.status, "blocked");
+
+    for (let i = 1; i <= 12; i++) {
+      const now = LIVE + i * 3_000;
+      transitions.push(...tracker.output("Codex", "\r\u001b[KAllow command?", now));
+      assert.strictEqual(tracker.get("Codex")?.status, "blocked", "redraw is not approval");
+      transitions.push(...tracker.tick(now + BLOCKED_QUIET_MS + 1));
+    }
+    assert.strictEqual(transitions.filter((t) => t.notify).length, 1);
+  });
+
+  test("a text blocker survives a split redraw, then resolves and can alert again", () => {
+    const tracker = makeTracker("Codex");
+    const transitions = [];
+    transitions.push(...tracker.output("Codex", "Allow command?", LIVE));
+    transitions.push(...tracker.tick(LIVE + BLOCKED_QUIET_MS + 1));
+    assert.strictEqual(tracker.get("Codex")?.status, "blocked");
+
+    transitions.push(...tracker.output("Codex", "\r\u001b[K", LIVE + 3_000));
+    assert.strictEqual(tracker.get("Codex")?.status, "blocked");
+    transitions.push(...tracker.output("Codex", "Allow command?", LIVE + 3_150));
+    assert.strictEqual(tracker.get("Codex")?.status, "blocked");
+    transitions.push(...tracker.tick(LIVE + 3_150 + BLOCKED_QUIET_MS + 1));
+    assert.strictEqual(transitions.filter((t) => t.notify).length, 1);
+
+    tracker.output("Codex", "\r\u001b[KRunning approved command", LIVE + 6_000);
+    assert.strictEqual(tracker.get("Codex")?.status, "blocked", "wait for redraw to settle");
+    tracker.tick(LIVE + 6_000 + BLOCKED_QUIET_MS + 1);
+    assert.strictEqual(tracker.get("Codex")?.status, "working");
+    tracker.output("Codex", "\r\u001b[KAllow command?", LIVE + 9_000);
+    const nextPrompt = tracker.tick(LIVE + 9_000 + BLOCKED_QUIET_MS + 1);
+    assert.strictEqual(nextPrompt[0].status, "blocked");
+    assert.strictEqual(nextPrompt[0].notify, true, "a later request still alerts");
+  });
+
+  test("authoritative protocol and exit resolve a heuristic blocker immediately", () => {
+    for (const source of ["protocol", "exit"]) {
+      const tracker = makeTracker("Codex");
+      tracker.output("Codex", "Allow command?", LIVE);
+      tracker.tick(LIVE + BLOCKED_QUIET_MS + 1);
+      const now = LIVE + 3_000;
+      tracker.output("Codex", "\r\u001b[K", now);
+      if (source === "protocol") {
+        tracker.output("Codex", osc("state=working:app=codex"), now + 1);
+        assert.strictEqual(tracker.get("Codex")?.status, "working");
+      } else {
+        tracker.execEnd("Codex", 1, now + 1);
+        assert.strictEqual(tracker.get("Codex")?.status, "error");
+      }
+    }
+  });
+
   test("an agent with no manifest still settles to idle rather than sticking", () => {
     const tracker = makeTracker("My Agent");
     tracker.output("My Agent", "work\n", LIVE);
