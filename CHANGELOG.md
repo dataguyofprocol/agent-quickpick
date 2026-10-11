@@ -4,6 +4,42 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0] — 2026-10-11
+
+### Added
+- **Claude Code and OpenCode notifications are back, on time.** Both now report their own state over OSC 7501 through a launch-time reporter, instead of being inferred from terminal text, which missed most permission prompts and never noticed a finished turn. Claude Code is launched with `--settings` hooks (layered on your settings, run alongside your hooks) that print the report for it; OpenCode V2 gets a small TUI plugin through `OPENCODE_CLI_CONFIG_CONTENT`, with your own `cli.json` plugins kept. Nothing is written to either agent's configuration. POSIX only; turn off with the new `agentQuickpick.agentStatusReporters` setting.
+
+### Fixed
+- The legacy cleanup now also removes the OpenCode V2 plugin older versions wrote to `plugins/agent-quickpick-lifecycle.js`; it only looked in V1's `plugin/`, so the stale plugin kept loading and timing out against a server that no longer exists.
+
+## [0.13.0] — 2026-10-11
+
+### Added
+- **Program Status Protocol (OSC 7501) support.** An agent that reports its own state — `idle`, `working`, `done`, `blocked`, `error`, with an optional `kind` (`permission` / `question` / `auth`), `progress`, `msg`, `title` and hierarchical record ids — is now believed directly. The protocol was [announced on 2026-10-06](https://mitchellh.com/writing/program-status-osc7501) ([post on X](https://x.com/mitchellh/status/2107577887159386152)) and is specific to a turn rather than inferred from the screen; Codex, pi, Claude Code, Droid and Crush had shipped it within a week. See the notes below for which of those actually reach us in VS Code. Multiple records are supported, so a sub-task waiting on you is surfaced even while the program itself keeps working.
+- **Fallback detection for agents that don't speak the protocol yet.** Window-title spinners and glyphs, `OSC 9;4` progress reports, and recent output are matched against per-agent rule tables derived from [Herdr](https://github.com/herdrdev/herdr)'s detection manifests (see [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)). Only explicit permission/approval prompts can raise a notification from a heuristic; inferred progress and rest states are confined to the status bar and the sessions picker. Turn it off with the new `agentQuickpick.fallbackDetection` setting to trust the protocol alone.
+- **pi terminals are launched with pi's own `PI_PROGRAM_STATUS=1`**, so pi reports its status even though VS Code cannot answer the protocol's handshake (see below). An explicit `PI_PROGRAM_STATUS` you set yourself is never overridden.
+- Status-bar tooltips show an agent's reported progress percentage.
+
+### Notes
+- **Which agents report their own state, and why most still can't in VS Code.** As of 2026-10-11, OSC 7501 is emitted by Codex ([#52725](https://github.com/openai/codex/pull/52725)), pi ≥ 1.1.0, Claude Code ≥ 2.1.295, Droid 0.237+ and Crush. But Claude Code, pi and Droid first *ask* the terminal whether it supports the protocol and only report if the answer arrives before the terminal's own device-attributes reply; VS Code does not implement OSC 7501 and an extension cannot answer in time, so those three stay silent here. Only Codex (which emits unconditionally) and pi (via its override, which we set) reach the protocol path in VS Code today — inference is what tracks everyone else, including Claude Code. OpenCode, Qwen Code, Gemini CLI, Goose, Kilo Code and Kimi have open, unimplemented requests. See the README's support table.
+
+### Changed
+- **Status vocabulary now follows the protocol**, and is what you see everywhere: `idle`, `working`, `done`, `blocked` (with a reason), `error`, `unknown` — replacing the internal `running` / `finished` / `waiting` / `failed` names. Notifications read "✓ Claude done · Upgraded 12 packages · my-app" and "⏸ Claude is blocked on permission".
+- **Agent status is read from the terminal, not from installed hooks.** Nothing is written to any agent's configuration. `engines.vscode` is now `^1.93.0`, which is where the shell-integration output API this relies on (`onDidStartTerminalShellExecution` + `execution.read()`) landed.
+- **A `done`/`error` result outlives its process.** The protocol's record lifetime is honored: `done` and `error` stay visible after the agent exits, while `working` and `blocked` are dropped when the process ends or a new command starts.
+- Refresh the micro-benchmark scenarios and the README performance baseline for the new hot paths (OSC 7501 parsing, signal capture, rule classification, legacy cleanup).
+
+### Removed
+- **Antigravity is no longer a built-in agent.** It is retired from the picker (and its detection rules with it); an existing hook that an older version installed for it is still cleaned up. Add it back yourself via `agentQuickpick.agents` if you use it.
+- **The lifecycle hook/plugin install pipeline.** The localhost hook server, `AQP_HOOK_URL`/`AQP_SESSION` environment injection, per-agent config merges, the one-time install prompt, and the generated OpenCode/pi plugin files are all gone — roughly 4,000 lines with them, including the HTTP server that accepted unauthenticated localhost POSTs. The **Remove Lifecycle Hooks** command survives as **Remove Legacy Lifecycle Hooks**, and hooks left behind by older versions are stripped automatically once after upgrading, so an obsolete hook can't keep spawning a process on every agent turn.
+- The `agentQuickpick.lifecycleNotifications` description no longer claims a hook install is required.
+
+### Fixed
+- **A crashed agent no longer stays "working" forever.** A protocol report used to latch the session, which suppressed the exit-status poll; a terminal that reported `working` and then died now reports `error` with its exit code.
+- **A finished record is no longer masked by a stale sub-task record.** When several records exist, a blocked sub-task wins (it's what needs you), otherwise the root record defines the program's state, so a `done` root can't be hidden behind an old `working` child.
+- Malformed *optional* protocol keys (`kind`, `progress`, `app`) are treated as absent instead of discarding the whole report, per the spec — so an agent using a newer value than this build knows still reports its state.
+- Herdr's Rust-style inline regex flags (`(?i)`, `(?m)`) are translated instead of silently failing to compile, which had disabled several ported rules.
+
 ## [0.12.3] — 2026-09-25
 
 ### Fixed

@@ -1,14 +1,18 @@
 /**
- * The universal exit-status poller fallback — detects finished/failed for
- * agents whose hooks never fire. Uses fake terminals ({name, creationOptions,
+ * The universal exit-status poll — the backstop for terminals where shell
+ * integration never came up. Uses fake terminals ({name, creationOptions,
  * exitStatus}); pollExitStatuses only touches those fields of vscode.Terminal.
+ *
+ * Whether a session has *already* reached a final state now belongs to the
+ * tracker (`SessionTracker.execEnd` keeps a protocol-reported done/error over a
+ * later exit), so the poll reports raw exits and nothing else.
  * Unit tier — no VS Code host needed.
  */
 
 import * as assert from "assert";
 import type * as vscode from "vscode";
 
-import { type SessionState, pollExitStatuses } from "../../lifecycle";
+import { pollExitStatuses } from "../../lifecycle";
 
 /** Structural fake of vscode.Terminal — only name + exitStatus are read. */
 function terminal(name: string, exitCode?: number): vscode.Terminal {
@@ -31,113 +35,57 @@ function renamedTerminal(
   } as vscode.Terminal;
 }
 
-function session(name: string, status: SessionState["status"]): SessionState {
-  return { name, agentName: name, status, changedAt: 0 };
-}
-
 const AGENTS = new Set(["claude", "codex", "oh-my-pi", "opencode"]);
 
 suite("pollExitStatuses", () => {
   test("empty terminals → empty map", () => {
-    const result = pollExitStatuses([], new Map(), AGENTS);
-    assert.strictEqual(result.size, 0);
+    assert.strictEqual(pollExitStatuses([], AGENTS).size, 0);
   });
 
-  test("agent terminal exited 0 → finished with exitCode", () => {
-    const result = pollExitStatuses([terminal("Claude", 0)], new Map(), AGENTS);
+  test("agent terminal exited 0 → done with exitCode", () => {
+    const result = pollExitStatuses([terminal("Claude", 0)], AGENTS);
     assert.deepStrictEqual(result.get("Claude"), { status: "done", exitCode: 0 });
   });
 
-  test("agent terminal exited non-zero → failed with exitCode", () => {
-    const result = pollExitStatuses([terminal("Claude", 130)], new Map(), AGENTS);
+  test("agent terminal exited non-zero → error with exitCode", () => {
+    const result = pollExitStatuses([terminal("Claude", 130)], AGENTS);
     assert.deepStrictEqual(result.get("Claude"), { status: "error", exitCode: 130 });
   });
 
   test("numbered sessions match their agent (counter stripped)", () => {
-    const result = pollExitStatuses([terminal("Claude (2)", 0)], new Map(), AGENTS);
+    const result = pollExitStatuses([terminal("Claude (2)", 0)], AGENTS);
     assert.ok(result.has("Claude (2)"), "keyed by the full tab name");
   });
 
   test("agent match is case-insensitive", () => {
-    const result = pollExitStatuses([terminal("CLAUDE", 0)], new Map(), AGENTS);
-    assert.ok(result.has("CLAUDE"));
+    assert.ok(pollExitStatuses([terminal("CLAUDE", 0)], AGENTS).has("CLAUDE"));
   });
 
   test("renamed tab still matches its original creation name", () => {
-    const result = pollExitStatuses(
-      [renamedTerminal("My Claude", "Claude", 0)],
-      new Map([["Claude", session("Claude", "working")]]),
-      AGENTS
-    );
-    assert.deepStrictEqual(result.get("My Claude"), {
-      status: "done",
-      exitCode: 0,
-    });
-  });
-
-  test("renamed tab skips a session already in a final state", () => {
-    const result = pollExitStatuses(
-      [renamedTerminal("My Claude", "Claude", 0)],
-      new Map([["Claude", session("Claude", "done")]]),
-      AGENTS
-    );
-    assert.strictEqual(result.size, 0);
+    const result = pollExitStatuses([renamedTerminal("My Claude", "Claude", 0)], AGENTS);
+    assert.deepStrictEqual(result.get("My Claude"), { status: "done", exitCode: 0 });
   });
 
   test("non-agent terminals are ignored", () => {
     const result = pollExitStatuses(
       [terminal("zsh", 0), terminal("node", 1), terminal("PowerShell", 0)],
-      new Map(),
       AGENTS
     );
     assert.strictEqual(result.size, 0);
   });
 
   test("still-running terminals (no exitStatus) are not reported", () => {
-    const result = pollExitStatuses([terminal("Claude"), terminal("Codex")], new Map(), AGENTS);
+    const result = pollExitStatuses([terminal("Claude"), terminal("Codex")], AGENTS);
     assert.strictEqual(result.size, 0);
   });
 
   test("exitStatus with undefined code is treated as still running", () => {
     const t = { name: "Claude", exitStatus: { code: undefined } } as vscode.Terminal;
-    const result = pollExitStatuses([t], new Map(), AGENTS);
-    assert.strictEqual(result.size, 0);
-  });
-
-  test("sessions already finished or failed are skipped (no re-report)", () => {
-    const sessions = new Map<string, SessionState>([
-      ["Claude", session("Claude", "done")],
-      ["Codex", session("Codex", "error")],
-      ["OpenCode", session("OpenCode", "working")],
-    ]);
-    const result = pollExitStatuses(
-      [terminal("Claude", 0), terminal("Codex", 1), terminal("OpenCode", 0)],
-      sessions,
-      AGENTS
-    );
-    assert.strictEqual(result.size, 1);
-    assert.ok(result.has("OpenCode"), "only the non-final session is re-reported");
-  });
-
-  test("unknown (re-adopted) sessions ARE polled — their real state is discovered", () => {
-    const sessions = new Map<string, SessionState>([
-      ["Claude", session("Claude", "unknown")],
-    ]);
-    const result = pollExitStatuses([terminal("Claude", 0)], sessions, AGENTS);
-    assert.deepStrictEqual(result.get("Claude"), { status: "done", exitCode: 0 });
-  });
-
-  test("waiting sessions are polled too (a crashed agent must not stay 'blocked')", () => {
-    const sessions = new Map<string, SessionState>([
-      ["Claude", session("Claude", "blocked")],
-    ]);
-    const result = pollExitStatuses([terminal("Claude", 1)], sessions, AGENTS);
-    assert.deepStrictEqual(result.get("Claude"), { status: "error", exitCode: 1 });
+    assert.strictEqual(pollExitStatuses([t], AGENTS).size, 0);
   });
 
   test("agent names come from the live config — custom user agents are polled", () => {
     const custom = new Set(["claude", "my-agent"]);
-    const result = pollExitStatuses([terminal("my-agent", 0)], new Map(), custom);
-    assert.ok(result.has("my-agent"));
+    assert.ok(pollExitStatuses([terminal("my-agent", 0)], custom).has("my-agent"));
   });
 });

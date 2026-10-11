@@ -11,8 +11,7 @@ import * as fs from "fs";
 import * as path from "path";
 
 import { BUILTIN_AGENTS, ALLOWED_COLORS } from "../../agents";
-import { HOOK_SCHEMA_VERSION, mergeCommandHooks } from "../../lifecycle";
-import { LIFECYCLE_ADAPTERS, isAbsoluteForPlatform } from "../../lifecycle-adapters";
+import { LEGACY_TARGETS, isAbsoluteForPlatform } from "../../legacy-hooks";
 
 // out/test/unit/consistency.test.js → repo root is three levels up.
 const REPO_ROOT = path.resolve(__dirname, "..", "..", "..");
@@ -90,83 +89,80 @@ suite("consistency: built-in agents ↔ icons on disk", () => {
   });
 });
 
-suite("consistency: lifecycle adapters ↔ built-ins", () => {
-  test("every lifecycle adapter name matches a built-in agent (launch wiring)", () => {
-    // launchAgent looks up the adapter by agent.name; a mismatch silently
-    // skips hook env injection for that agent.
-    const names = new Set(BUILTIN_AGENTS.map((a) => a.name.toLowerCase()));
-    for (const name of Object.keys(LIFECYCLE_ADAPTERS)) {
+suite("consistency: legacy hook targets", () => {
+  const HOME = { darwin: "/Users/me", linux: "/home/me", win32: "C:\\Users\\me" } as const;
+
+  test("legacy targets are well-formed, including for retired agents", () => {
+    // Deliberately NOT restricted to built-in agents: Antigravity is retired,
+    // but a hook an older version wrote must still be strippable, so its target
+    // stays. What matters is that every target can still be resolved.
+    assert.ok(LEGACY_TARGETS.length > 0);
+    for (const target of LEGACY_TARGETS) {
+      assert.ok(target.agentName.trim() !== "", "a legacy target needs an agent name");
+      assert.ok(target.marker.trim() !== "", `${target.agentName}: a marker is required`);
       assert.ok(
-        names.has(name.toLowerCase()),
-        `adapter "${name}" has no built-in agent — hook env would never be injected`
+        target.marker.startsWith("agentQuickpick:"),
+        `${target.agentName}: markers are namespaced agentQuickpick:<agent>`
       );
     }
   });
 
-  test("adapter markers are unique across adapters", () => {
-    const markers = Object.values(LIFECYCLE_ADAPTERS).map((a) => a.marker);
+  test("legacy markers are unique per agent", () => {
+    // One agent may have been installed at several paths over time (OpenCode's
+    // V1 `plugin/` and V2 `plugins/`), but always with its own single marker.
+    const byAgent = new Map<string, string>();
+    for (const target of LEGACY_TARGETS) {
+      const seen = byAgent.get(target.agentName);
+      assert.ok(seen === undefined || seen === target.marker, `${target.agentName}: one marker`);
+      byAgent.set(target.agentName, target.marker);
+    }
+    const markers = [...byAgent.values()];
     assert.strictEqual(new Set(markers).size, markers.length);
   });
 
-  test("fresh merge embeds the current HOOK_SCHEMA_VERSION tag (upgrade contract)", () => {
-    for (const adapter of Object.values(LIFECYCLE_ADAPTERS)) {
-      if (adapter.kind !== "command-hooks") continue;
-      const merged = adapter.mergeHooks(
-        {},
-        "http://127.0.0.1:49999",
-        "Claude",
-        "/tmp/hook-server.json"
-      );
+  test("command-hook config paths are home-relative POSIX fragments", () => {
+    for (const target of LEGACY_TARGETS) {
+      if (target.kind !== "command-hooks") continue;
       assert.ok(
-        JSON.stringify(merged).includes(`${adapter.marker}:v${HOOK_SCHEMA_VERSION}`),
-        `${adapter.agentName}: merged hooks must embed the current version tag`
+        !path.isAbsolute(target.configPath) && !target.configPath.includes("\\"),
+        `${target.agentName}: configPath must be home-relative, got "${target.configPath}"`
       );
     }
   });
-});
 
-suite("consistency: plugin-file adapters", () => {
-  const HOME = { darwin: "/Users/me", linux: "/home/me", win32: "C:\\Users\\me" } as const;
+  test("named-schema targets declare a registry key", () => {
+    for (const target of LEGACY_TARGETS) {
+      if (target.kind !== "command-hooks" || target.schema !== "named") continue;
+      assert.ok(target.hookName, `${target.agentName}: named schema needs hookName`);
+    }
+  });
 
-  test("resolveBaseDir yields an absolute dir on every platform with a bare env", () => {
-    // The install sink joins pluginPath onto this; a relative result would
-    // write the extension somewhere relative to the extension host's cwd.
-    for (const adapter of Object.values(LIFECYCLE_ADAPTERS)) {
-      if (adapter.kind !== "plugin-file") continue;
+  test("plugin base dirs resolve absolute on every platform with a bare env", () => {
+    // The cleanup sink joins pluginPath onto this; a relative result would look
+    // for our file somewhere relative to the extension host's cwd.
+    for (const target of LEGACY_TARGETS) {
+      if (target.kind !== "plugin-file") continue;
       for (const platform of ["darwin", "linux", "win32"] as const) {
-        const dir = adapter.resolveBaseDir({}, platform, HOME[platform]);
+        const dir = target.resolveBaseDir({}, platform, HOME[platform]);
         assert.ok(
           isAbsoluteForPlatform(dir, platform),
-          `${adapter.agentName} on ${platform}: "${dir}" is not absolute`
+          `${target.agentName} on ${platform}: "${dir}" is not absolute`
         );
       }
     }
   });
 
-  test("plugin paths are relative fragments, unique across adapters", () => {
+  test("plugin paths are relative fragments, unique across targets", () => {
     const paths: string[] = [];
-    for (const adapter of Object.values(LIFECYCLE_ADAPTERS)) {
-      if (adapter.kind !== "plugin-file") continue;
+    for (const target of LEGACY_TARGETS) {
+      if (target.kind !== "plugin-file") continue;
       assert.ok(
-        !adapter.pluginPath.startsWith("/") && !adapter.pluginPath.startsWith("~"),
-        `${adapter.agentName}: pluginPath must be base-dir-relative`
+        !path.isAbsolute(target.pluginPath) && !target.pluginPath.startsWith("~"),
+        `${target.agentName}: pluginPath must be base-dir-relative`
       );
-      paths.push(adapter.pluginPath);
+      paths.push(target.pluginPath);
     }
     assert.strictEqual(new Set(paths).size, paths.length, "plugin paths must not collide");
-  });
-
-  test("generated source embeds the adapter's own marker (guard recognizes it)", () => {
-    // shouldWritePluginFile/shouldRemovePluginFile key off the marker; a source
-    // without it would make install refuse to upgrade its own previous output.
-    for (const adapter of Object.values(LIFECYCLE_ADAPTERS)) {
-      if (adapter.kind !== "plugin-file") continue;
-      const src = adapter.buildSource("http://127.0.0.1:49999", "", "/tmp/hook-server.json");
-      assert.ok(
-        src.includes(adapter.marker),
-        `${adapter.agentName}: generated source must contain its marker`
-      );
-    }
   });
 });
 

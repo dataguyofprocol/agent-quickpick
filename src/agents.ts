@@ -59,15 +59,14 @@ export interface ResolvedAgent {
  * Personal aliases like `claude-proxy` / `claude-glm` are intentionally NOT
  * here — they belong in the user's settings. Their SVGs are still shipped so
  * the user can reference them by filename (`claude-proxy.svg`) if they want.
- * The same goes for `gemini` (dropped when Gemini CLI transitioned to
- * Antigravity): `gemini.svg` remains shipped for settings-defined entries.
+ * The same goes for retired agents whose SVGs still ship (`gemini.svg`): a
+ * user-defined entry may reference them by filename.
  */
 export const BUILTIN_AGENTS: AgentConfig[] = [
   { name: "Terminal", cmd: "", icon: "terminal.svg", color: "agentQuickpick.terminal" },
   { name: "Claude", cmd: "claude", icon: "claude.svg", color: "agentQuickpick.claude" },
   { name: "Command Code", cmd: "cmd", icon: "commandcode.svg", color: "agentQuickpick.commandcode" },
   { name: "Codex", cmd: "codex", icon: "codex.svg", color: "terminal.ansiGreen" },
-  { name: "Antigravity", cmd: "agy", icon: "antigravity.svg", color: "terminal.ansiBlue" },
   { name: "Copilot", cmd: "gh copilot", icon: "copilot.svg", color: "terminal.ansiCyan" },
   { name: "OpenCode", cmd: "opencode", icon: "opencode.svg", color: "agentQuickpick.opencode" },
   { name: "Aider", cmd: "aider", icon: "aider.svg", color: "terminal.ansiRed" },
@@ -402,6 +401,32 @@ export function uniqueTerminalName(base: string, existing: Iterable<string>): st
     n++;
   }
   return `${base} (${n})`;
+}
+
+/**
+ * Environment that makes an agent report its state with OSC 7501 even though
+ * the terminal cannot answer the protocol's feature-detection query.
+ *
+ * The protocol lets a program ask the terminal whether it supports OSC 7501
+ * (`OSC 7501 ; ?`) and report only if the answer beats the terminal's own
+ * device-attributes reply. VS Code does not implement the protocol, so an agent
+ * that gates on that probe — pi, Claude Code and Droid all do — would stay
+ * silent here forever. pi ships a documented opt-in for exactly this case
+ * (`PI_PROGRAM_STATUS=1`, pi >= 1.1.0), and its reports are ordinary OSC
+ * sequences that a terminal without support ignores, which is the protocol's
+ * own premise.
+ *
+ * An explicit value already in the environment is never overridden: a user who
+ * set `PI_PROGRAM_STATUS=0` has said they want reporting off.
+ */
+export function programStatusEnv(
+  agentName: string,
+  env: NodeJS.ProcessEnv = process.env
+): Record<string, string> | undefined {
+  if (agentName.trim().toLowerCase() !== "pi") return undefined;
+  const existing = env.PI_PROGRAM_STATUS;
+  if (existing !== undefined && existing.trim() !== "") return undefined;
+  return { PI_PROGRAM_STATUS: "1" };
 }
 
 /**

@@ -6,10 +6,6 @@ import * as os from "os";
 import {
   type SessionState,
   type LifecycleStatus,
-  ProgramStatusParser,
-  detectHeuristicStatus,
-  readConfigJson,
-  writeConfigJson,
   pollExitStatuses,
   countByStatus,
   statusBarText,
@@ -24,7 +20,6 @@ import {
   waitingLabel,
   type SystemNotifyMode,
   type SpawnSpec,
-  type WaitingReason,
   shouldSystemNotify,
   shouldPlaySound,
   systemNotifyCommand,
@@ -37,9 +32,9 @@ import {
   FOCUS_URI_SESSION_PARAM,
   sessionFromFocusUri,
   terminalCreationName,
-  shouldRemovePluginFile,
 } from "./lifecycle";
-import { LIFECYCLE_ADAPTERS, CLAUDE_ADAPTER, DROID_ADAPTER } from "./lifecycle-adapters";
+import { SessionTracker, type SessionTransition } from "./session-tracker";
+import { type LegacyIo, cleanupLegacyHooks, stripWorkspaceLegacyHooks } from "./legacy-hooks";
 import {
   type AgentConfig,
   type ResolvedAgent,
@@ -56,64 +51,9 @@ import {
   launchText,
   launchDelay,
   uniqueTerminalName,
+  programStatusEnv,
 } from "./agents";
-
-/**
- * The marker substring the old (workspace-local) OpenCode install left in
- * `opencode.json`'s `plugin[]`. Kept here (not in the adapter) because the
- * current OpenCode adapter is plugin-file based and no longer touches JSON;
- * this is migration-only.
- */
-const OLD_OPENCODE_PLUGIN_MARKER = "agent-quickpick-lifecycle";
-
-// Capture the env vars that steer plugin-file agents' config dirs once at
-// module load so the rest of the code uses stable constants rather than
-// repeatedly reading `process.env`.
-const OPENCODE_CONFIG_DIR = process.env.OPENCODE_CONFIG_DIR;
-const XDG_CONFIG_HOME = process.env.XDG_CONFIG_HOME;
-const APPDATA = process.env.APPDATA;
-const LOCALAPPDATA = process.env.LOCALAPPDATA;
-const PI_CODING_AGENT_DIR = process.env.PI_CODING_AGENT_DIR;
-
-/**
- * Those overrides as a snapshot object, fed to each plugin-file adapter's pure
- * {@link PluginFileAdapter.resolveBaseDir} so base-dir resolution never reads
- * `process.env` outside module load. One shared snapshot rather than one per
- * agent: the keys don't collide, and adapters ignore what they don't use.
- */
-const PLUGIN_ENV_SNAPSHOT = {
-  OPENCODE_CONFIG_DIR,
-  XDG_CONFIG_HOME,
-  APPDATA,
-  LOCALAPPDATA,
-  PI_CODING_AGENT_DIR,
-};
-
-/** True if opencode.json's plugin[] still has our old file:// entry. */
-function hasOldOpencodePlugin(parsed: unknown): boolean {
-  const plugin = (parsed as { plugin?: unknown })?.plugin;
-  return (
-    Array.isArray(plugin) &&
-    plugin.some((p) => typeof p === "string" && p.includes(OLD_OPENCODE_PLUGIN_MARKER))
-  );
-}
-
-/** Remove our old file:// entry from opencode.json's plugin[]; prune if empty. */
-function stripOldOpencodePlugin(parsed: unknown): unknown {
-  const config = { ...(parsed as Record<string, unknown>) };
-  if (!Array.isArray(config.plugin)) {
-    return config;
-  }
-  const filtered = (config.plugin as unknown[]).filter(
-    (p) => !(typeof p === "string" && p.includes(OLD_OPENCODE_PLUGIN_MARKER))
-  );
-  if (filtered.length === 0) {
-    delete config.plugin;
-  } else {
-    config.plugin = filtered;
-  }
-  return config;
-}
+import { reporterLaunch } from "./agent-reporters";
 
 /**
  * Resolve an `icon` string to a vscode.IconPath.
@@ -242,12 +182,29 @@ function activeWorkspaceFolder(): string | undefined {
  */
 const pendingLaunchTimers = new Set<NodeJS.Timeout>();
 
+/** The `agentStatusReporters` setting. */
+function statusReportersEnabled(): boolean {
+  return vscode.workspace
+    .getConfiguration("agentQuickpick")
+    .get<boolean>("agentStatusReporters", true);
+}
+
+/** A file's contents, or `undefined` when it cannot be read. */
+function readFileIfExists(file: string): string | undefined {
+  try {
+    return fs.readFileSync(file, "utf8");
+  } catch {
+    return undefined;
+  }
+}
+
 /** Create + show a terminal for the given resolved agent. */
 async function launchAgent(
   agent: ResolvedAgent,
   state?: vscode.Memento,
   delayMs = 0,
-  lifecycle?: LifecycleContext
+  lifecycle?: LifecycleContext,
+  extensionPath?: string
 ): Promise<vscode.Terminal> {
   // Include both the current display name and the frozen creation name:
   // after a user renames "Claude" to "My Claude", the original session key
@@ -259,11 +216,30 @@ async function launchAgent(
   ]);
   const tabName = uniqueTerminalName(agent.name, openNames);
 
+  // Some agents gate their OSC 7501 reports behind a feature-detection query the
+  // terminal has to answer, which VS Code cannot; `programStatusEnv` supplies the
+  // agent's own documented opt-in where one exists (pi), and nothing otherwise.
+  // Claude Code and OpenCode get a launch-time reporter that emits OSC 7501 from
+  // their own lifecycle events (see `agent-reporters.ts`); nothing is written to
+  // their configuration.
+  const reporter =
+    extensionPath !== undefined && !agent.isPlainTerminal && statusReportersEnabled()
+      ? reporterLaunch(agent.cmd, agent.launcher, {
+          extensionPath,
+          platform: process.platform,
+          env: process.env,
+          homedir: os.homedir(),
+          readFile: readFileIfExists,
+        })
+      : undefined;
+  const env = { ...programStatusEnv(agent.name), ...reporter?.env };
+
   const terminal = vscode.window.createTerminal({
     name: tabName,
     iconPath: agent.iconPath,
     color: agent.color,
     location: vscode.TerminalLocation.Editor,
+    ...(Object.keys(env).length > 0 ? { env } : {}),
   });
   terminal.show();
 
@@ -271,7 +247,8 @@ async function launchAgent(
   // heuristics, or the process exit poller.
   lifecycle?.trackSession(tabName, agent.name, activeWorkspaceFolder());
 
-  const text = launchText(agent);
+  const base = launchText(agent);
+  const text = base !== "" && reporter?.args ? base + reporter.args : base;
   const delay = launchDelay(agent.isPlainTerminal, delayMs);
   if (text !== "") {
     if (delay > 0) {
@@ -617,7 +594,13 @@ async function runLauncher(context: vscode.ExtensionContext): Promise<void> {
       const sel = qp.selectedItems[0];
       if (sel?.agent) {
         qp.hide();
-        launchAgent(sel.agent, context.globalState, launchDelayMs, lifecycleCtx);
+        launchAgent(
+          sel.agent,
+          context.globalState,
+          launchDelayMs,
+          lifecycleCtx,
+          context.extensionPath
+        );
       }
     });
     qp.onDidHide(() => {
@@ -873,186 +856,225 @@ function configuredAgentNames(): Set<string> {
  * existing call sites don't all need an extra parameter.
  */
 export class LifecycleContext {
-  /** Owns per-terminal OSC parsers, status state, and notifications. */
-  private readonly sessions = new Map<string, SessionState>();
-  private readonly parsers = new Map<string, ProgramStatusParser>();
-  private readonly recentOutput = new Map<string, string>();
-  /** Current display-name aliases back to a stable lifecycle session key. */
-  private readonly sessionAliases = new Map<string, string>();
+  /**
+   * The status brain. It owns every terminal's OSC parser, signal buffer and
+   * session state, and is free of `vscode` so the unit tier can drive it.
+   */
+  private readonly tracker = new SessionTracker();
   private readonly statusItem: vscode.StatusBarItem;
   private readonly context: vscode.ExtensionContext;
   private readonly pollTimer: NodeJS.Timeout;
-  private readonly outputDisposable: vscode.Disposable;
+  private readonly tickTimer: NodeJS.Timeout;
+  /** Disposables for the shell-integration subscriptions (absent below 1.93). */
+  private readonly shellDisposables: vscode.Disposable[] = [];
   private readonly closeDisposable: vscode.Disposable;
   /** Disposes the agentQuickpick.agents subscription created in the constructor. */
   private readonly agentsConfigDisposable: vscode.Disposable;
-  /**
-   * Lowercased names of the configured agents — the exit poller's match set.
-   * Captured once here and refreshed by agentsConfigDisposable on config
-   * change, instead of being recomputed on every 3s tick.
-   */
   private agentNames: Set<string>;
 
   constructor(context: vscode.ExtensionContext, statusItem: vscode.StatusBarItem) {
     this.context = context;
     this.statusItem = statusItem;
     this.agentNames = configuredAgentNames();
-    const onShellStart = vscode.window.onDidStartTerminalShellExecution;
-    this.outputDisposable = typeof onShellStart === "function"
-      ? onShellStart((event) => {
+    this.syncFallbackSetting();
+
+    // Shell integration is how an agent's output reaches us at all: the OSC 7501
+    // reports the protocol defines, the window title and `OSC 9` progress the
+    // fallback rules read, and the text tail they match. It exists on VS Code
+    // 1.93+ and only for shells with integration enabled, so every use is
+    // guarded and the exit-status poll below stays as the universal backstop.
+    const onStart = vscode.window.onDidStartTerminalShellExecution;
+    const onEnd = vscode.window.onDidEndTerminalShellExecution;
+
+    if (typeof onStart === "function") {
+      this.shellDisposables.push(
+        onStart((event) => {
           const terminal = event.terminal;
-          const execution = event.execution as vscode.TerminalShellExecution & { read?: () => AsyncIterable<string> };
-          if (typeof execution.read !== "function") return;
+          const execution = event.execution as vscode.TerminalShellExecution & {
+            read?: () => AsyncIterable<string>;
+          };
+          if (typeof execution.read !== "function") {
+            return;
+          }
+          const session = this.sessionKeyForTerminal(terminal);
+          if (this.tracker.get(session) === undefined) {
+            return; // not a terminal we launched
+          }
+          this.applyTransitions(this.tracker.execStart(session));
+
+          // `read()` must be called synchronously — data written before the
+          // first call is not replayed — so the stream is opened here and
+          // drained in the background.
+          const stream = execution.read();
           void (async () => {
             try {
-              for await (const chunk of execution.read!()) this.consumeOutput(terminal, chunk, execution.cwd?.fsPath);
+              for await (const chunk of stream) {
+                this.tracker.setCwd(session, execution.cwd?.fsPath);
+                this.applyTransitions(this.tracker.output(session, chunk));
+              }
             } catch {
-              // Shell integration may end before its output stream does.
+              // Shell integration can end before its output stream does.
             }
           })();
         })
-      : { dispose: () => {} };
-
-    // Universal fallback: poll exit statuses every 3s for agents whose process
-    // has exited (detects finished/failed even without hooks). The agent set is
-    // captured above and refreshed on agentQuickpick.agents changes (see
-    // agentsConfigDisposable below), so a runtime config change is still picked
-    // up without a window reload — without re-reading config every tick. With
-    // no terminals open there is nothing to poll, so skip the work entirely.
-    this.pollTimer = setInterval(() => {
-      if (vscode.window.terminals.length === 0) {
-        return;
-      }
-      const exited = pollExitStatuses(
-        vscode.window.terminals,
-        this.sessions,
-        this.agentNames
       );
-      let changed = false;
-      const now = Date.now();
+    }
+
+    if (typeof onEnd === "function") {
+      this.shellDisposables.push(
+        onEnd((event) => {
+          const session = this.sessionKeyForTerminal(event.terminal);
+          this.applyTransitions(this.tracker.execEnd(session, event.exitCode));
+        })
+      );
+    }
+
+    // Quiet-driven decay: a text-derived "working" has to fall back to idle once
+    // the agent stops repainting. The tracker skips sessions that never produced
+    // output, so an idle window costs nothing.
+    this.tickTimer = setInterval(() => {
+      this.applyTransitions(this.tracker.tick());
+    }, 500);
+
+    // Universal backstop for terminals where shell integration never came up.
+    this.pollTimer = setInterval(() => {
+      const exited = pollExitStatuses(vscode.window.terminals, this.agentNames);
+      const transitions: SessionTransition[] = [];
       for (const [name, exit] of exited) {
-        // `pollExitStatuses` keys by the current display name. Resolve back to
-        // the stable session key (the creation-time hook env name) so a renamed
-        // tab updates the same session rather than creating a duplicate.
         const terminal = vscode.window.terminals.find((t) => t.name === name);
-        const session = terminal
-          ? this.sessionKeyForTerminal(terminal)
-          : name;
-        const prev = this.sessions.get(session);
-        // A protocol-reported error remains authoritative over a successful exit.
-        if (prev?.authoritative) continue;
-        if (prev?.status === "error" && exit.status === "done") continue;
-        const fallbackAgentName = terminal
-          ? baseTerminalName(terminalCreationName(terminal))
-          : baseTerminalName(name);
-        this.sessions.set(session, {
-          ...(prev ?? {} as SessionState),
-          name: prev?.name ?? terminal?.name ?? session,
-          agentName: prev?.agentName ?? fallbackAgentName,
-          status: exit.status,
-          changedAt: now,
-          exitCode: exit.exitCode,
-          ...(prev?.launchedInFolder ? { launchedInFolder: prev.launchedInFolder } : {}),
-          ...(prev?.cwd ? { cwd: prev.cwd } : {}),
-        });
-        changed = true;
-        if (prev?.status !== exit.status) this.maybeNotify(session, exit.status, exit.exitCode);
+        if (terminal === undefined) {
+          continue;
+        }
+        transitions.push(
+          ...this.tracker.execEnd(this.sessionKeyForTerminal(terminal), exit.exitCode)
+        );
       }
-      if (changed) {
-        this.refreshStatusBar();
-      }
+      this.applyTransitions(transitions);
     }, 3000);
 
     // Clean up the session map when a terminal closes, so the status-bar count
-    // doesn't drift upward over a long session. Without this, entries were
-    // never removed (no eviction existed).
+    // doesn't drift upward over a long session.
     this.closeDisposable = vscode.window.onDidCloseTerminal((t) => {
-      const session = this.sessionKeyForTerminal(t);
-      this.parsers.delete(session);
-      this.recentOutput.delete(session);
-      const deleted = this.sessions.delete(session);
-      this.sessionAliases.delete(t.name);
-      for (const [displayName, key] of this.sessionAliases) {
-        if (key === session) {
-          this.sessionAliases.delete(displayName);
-        }
-      }
-      if (deleted) {
+      if (this.tracker.forget(this.sessionKeyForTerminal(t))) {
         this.refreshStatusBar();
       }
     });
 
     // Keep the poller's agent set live across settings edits (adding/removing
-    // agent entries), matching what the old per-tick recompute provided.
+    // agent entries), and honor a change to fallback detection immediately.
     this.agentsConfigDisposable = vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("agentQuickpick.agents")) {
         this.agentNames = configuredAgentNames();
       }
+      if (e.affectsConfiguration("agentQuickpick.fallbackDetection")) {
+        this.syncFallbackSetting();
+      }
     });
   }
 
-  /**
-   * Re-adopt agent terminals that survived a window reload into the in-memory
-    * sessions Map. Without this, {@link onHookEvent} would drop every incoming
-    * hook after a reload (the Map starts empty), silently disabling all
-    * notifications — including "needs input" — until the user manually
-    * relaunches each agent. Re-adopted sessions default to "unknown" (we know
-    * the tab exists, but not its real state); the next hook (or the exit
-    * poller) promotes them. Neither `cwd` nor `launchedInFolder` is known for
-    * re-adopted sessions, so they're hidden from the repo-scoped bar until a
-    * hook arrives carrying `cwd`.
-    */
-   seedFromOpenTerminals(agentNames: Set<string>): void {
-     const now = Date.now();
-     let changed = false;
-     for (const t of vscode.window.terminals) {
-       const session = terminalCreationName(t);
-       if (isSessionTerminal(session, agentNames) === false) {
-         continue;
-       }
-       const agentName = baseTerminalName(session);
-       const existing = this.sessions.get(session);
-       if (existing === undefined) {
-         this.sessions.set(session, {
-           name: t.name,
-           agentName,
-           status: "unknown",
-           changedAt: now,
-         });
-         changed = true;
-       } else if (existing.name !== t.name) {
-         this.sessions.set(session, { ...existing, name: t.name });
-         changed = true;
-       }
-       if (t.name !== session) {
-         if (this.sessionAliases.get(t.name) !== session) {
-           this.sessionAliases.set(t.name, session);
-         }
-       } else {
-         this.sessionAliases.delete(t.name);
-       }
-     }
-     if (changed) {
-       this.refreshStatusBar();
-     }
-   }
+  /** Apply the `fallbackDetection` setting to the tracker. */
+  private syncFallbackSetting(): void {
+    this.tracker.setFallbackEnabled(
+      vscode.workspace
+        .getConfiguration("agentQuickpick")
+        .get<boolean>("fallbackDetection", true)
+    );
+  }
 
-   /**
-    * Register a newly-launched agent terminal as a running session. The
-    * launching workspace folder is captured once and treated as immutable — it
-    * is the fallback for repo-scoping until a hook arrives with the agent's
-    * real current working directory.
-    */
-   trackSession(tabName: string, agentName: string, launchedInFolder?: string): void {
-     this.sessions.set(tabName, {
-       name: tabName,
-       agentName,
-       status: "unknown",
-       changedAt: Date.now(),
-       ...(launchedInFolder ? { launchedInFolder } : {}),
-     });
-     this.refreshStatusBar();
-   }
+  /**
+   * Re-adopt agent terminals that survived a window reload into the session map.
+   * Without this the status bar would show nothing for a window full of running
+   * agents until each one happened to print again. Re-adopted sessions start
+   * `unknown` (we know the tab exists, but nothing about its state); the next
+   * protocol report, rule match, or exit promotes them.
+   */
+  seedFromOpenTerminals(agentNames: Set<string>): void {
+    const candidates: { key: string; name: string; agentName: string }[] = [];
+    for (const t of vscode.window.terminals) {
+      const key = terminalCreationName(t);
+      if (isSessionTerminal(key, agentNames) === false) {
+        continue;
+      }
+      candidates.push({ key, name: t.name, agentName: baseTerminalName(key) });
+    }
+    if (this.tracker.seed(candidates)) {
+      this.refreshStatusBar();
+    }
+  }
+
+  /**
+   * Register a newly-launched agent terminal as a session. The launching
+   * workspace folder is captured once and treated as immutable — it is the
+   * fallback for repo-scoping until shell integration reports the agent's real
+   * working directory.
+   */
+  trackSession(tabName: string, agentName: string, launchedInFolder?: string): void {
+    this.tracker.track(tabName, agentName, launchedInFolder);
+    this.refreshStatusBar();
+  }
+
+  /**
+   * Look up a tracked session's state by the terminal's current display name. A
+   * renamed tab is resolved back to its stable creation-time session key.
+   */
+  getSessionState(tabName: string): SessionState | undefined {
+    const direct = this.tracker.get(tabName);
+    if (direct !== undefined) {
+      return direct;
+    }
+    // Fallback for a terminal renamed outside our picker: derive the stable key
+    // from the live terminal itself.
+    const terminal = vscode.window.terminals.find((t) => t.name === tabName);
+    if (terminal === undefined) {
+      return undefined;
+    }
+    return this.tracker.get(this.sessionKeyForTerminal(terminal));
+  }
+
+  /**
+   * Record a user-driven tab rename. The session key stays the terminal's
+   * creation-time name; the new display name is aliased to it, so the status
+   * bar, notifications, and click-to-focus all keep following the rename.
+   */
+  renameSession(
+    oldDisplayName: string,
+    newDisplayName: string,
+    stableSessionName: string
+  ): void {
+    if (this.tracker.rename(oldDisplayName, newDisplayName, stableSessionName)) {
+      this.refreshStatusBar();
+    }
+  }
+
+  /** Find the live terminal backing a stable session key (even after rename). */
+  findTerminalForSession(session: string): vscode.Terminal | undefined {
+    return vscode.window.terminals.find(
+      (t) => this.sessionKeyForTerminal(t) === session
+    );
+  }
+
+  /** Stable per-terminal key: display-name alias when renamed, else creation name. */
+  private sessionKeyForTerminal(t: vscode.Terminal): string {
+    const resolved = this.tracker.resolve(t.name);
+    return resolved !== t.name ? resolved : terminalCreationName(t);
+  }
+
+  /**
+   * Render status changes: notify for the ones flagged as user-facing, then
+   * recompute the status bar. All status decisions were already made by the
+   * tracker; this is presentation only.
+   */
+  private applyTransitions(transitions: SessionTransition[]): void {
+    if (transitions.length === 0) {
+      return;
+    }
+    for (const transition of transitions) {
+      if (transition.notify) {
+        this.maybeNotify(transition);
+      }
+    }
+    this.refreshStatusBar();
+  }
 
   /**
    * Announce a status change across the three channels: in-editor toast, native
@@ -1064,7 +1086,7 @@ export class LifecycleContext {
    * legitimately produce a sound + OS notification and no toast (VS Code in the
    * background), or a toast + sound and no OS notification (window focused).
    */
-  private maybeNotify(session: string, status: LifecycleStatus, exitCode?: number, waitingReason?: WaitingReason, detail?: string): void {
+  private maybeNotify(transition: SessionTransition): void {
     const config = vscode.workspace.getConfiguration("agentQuickpick");
     const settingOn = config.get<boolean>("lifecycleNotifications", true);
     const systemMode = config.get<SystemNotifyMode>(
@@ -1076,41 +1098,47 @@ export class LifecycleContext {
     const activeTerminal = vscode.window.activeTerminal;
     const isActive =
       activeTerminal !== undefined &&
-      this.sessionKeyForTerminal(activeTerminal) === session;
+      this.sessionKeyForTerminal(activeTerminal) === transition.session;
 
-    const sessionState = this.sessions.get(session);
-    const agentName = sessionState?.agentName ?? session;
+    const sessionState = this.tracker.get(transition.session);
+    const agentName = sessionState?.agentName ?? transition.session;
     // Attribute the toast to the session's own folder (matching the status
     // bar/tooltip), not workspaceFolders[0]: in a multi-root window a session
     // in folder B must not toast "· folder-a", and a re-adopted session with
     // no known folder omits the repo suffix.
     const sessionFolder = sessionState ? folderOf(sessionState) : undefined;
     const repo = sessionFolder ? folderBasename(sessionFolder) : undefined;
-    const msg = notificationMessage(agentName, status, repo, exitCode, waitingReason, detail);
+    const msg = notificationMessage(
+      agentName,
+      transition.status,
+      repo,
+      transition.exitCode,
+      transition.reason,
+      transition.detail
+    );
     if (!msg) {
       return;
     }
 
-    if (shouldNotify(status, isActive, settingOn)) {
-      const show = status === "error"
+    if (shouldNotify(transition.status, isActive, settingOn)) {
+      const show = transition.status === "error"
         ? (t: string, ...a: string[]) => vscode.window.showErrorMessage(t, ...a)
         : (t: string, ...a: string[]) => vscode.window.showInformationMessage(t, ...a);
       show(msg.text, msg.action).then((choice) => {
         if (choice === msg.action) {
-          const terminal = this.findTerminalForSession(session);
+          const terminal = this.findTerminalForSession(transition.session);
           terminal?.show();
         }
       });
     }
 
     if (
-      shouldSystemNotify(systemMode, status, vscode.window.state.focused, settingOn)
+      shouldSystemNotify(systemMode, transition.status, vscode.window.state.focused, settingOn)
     ) {
       // Title carries the product name (an OS notification has no VS Code
       // chrome to identify it); the body reuses the toast copy verbatim. The
-      // bundle id (macOS only) makes the banner wear the editor's icon instead
-      // of Script Editor's, and the URI makes a click land on this agent's
-      // terminal — see `systemNotifyCommand`.
+      // bundle id (macOS only) makes the banner wear the editor's icon, and the
+      // URI makes a click land on this agent's terminal.
       // Sanitize the rendered body in this file as well so static taint is killed
       // before it reaches the subprocess helper.
       const safeBody = sanitizeArgvText(msg.text);
@@ -1118,12 +1146,12 @@ export class LifecycleContext {
         systemNotifyCommand(process.platform, "Agent Quickpick", safeBody, {
           bundleId: hostBundleId(),
           notifierPath: notifierPath(this.context.extensionPath),
-          openUrl: focusUri(this.context.extension.id, session),
+          openUrl: focusUri(this.context.extension.id, transition.session),
         })
       );
     }
 
-    if (shouldPlaySound(soundOn, status, settingOn)) {
+    if (shouldPlaySound(soundOn, transition.status, settingOn)) {
       this.playSound();
     }
   }
@@ -1143,168 +1171,63 @@ export class LifecycleContext {
     const soundPath = custom
       ? custom
       : path.join(this.context.extensionPath, SOUND_FILE_DEFAULT);
-
-    try {
-      if (!fs.statSync(soundPath).isFile()) {
-        return;
-      }
-    } catch {
-      return;
-    }
     fireAndForget(soundPlayCommand(process.platform, soundPath));
   }
 
   /**
-   * Look up a tracked session's state by the terminal's current display name.
-   * A renamed tab is resolved through {@link sessionAliases} back to its stable
-   * creation-time session key.
+   * Recompute status-bar text + tooltip from the current sessions, filtered to
+   * the active workspace folder. When no workspace is open, all sessions are
+   * shown (preserves pre-filter behavior). Also re-scoped on editor focus
+   * changes — see the onDidChangeActiveTextEditor subscription in activate().
    */
-  getSessionState(tabName: string): SessionState | undefined {
-    const direct = this.sessions.get(this.sessionAliases.get(tabName) ?? tabName);
-    if (direct !== undefined) {
-      return direct;
-    }
-    // Fallback for a terminal renamed outside our picker (or if an alias was
-    // lost mid-session): derive the stable key from the live terminal itself.
-    const terminal = vscode.window.terminals.find((t) => t.name === tabName);
-    if (terminal === undefined) {
-      return undefined;
-    }
-    return this.sessions.get(this.sessionKeyForTerminal(terminal));
+  refreshStatusBar(): void {
+    const folder = activeWorkspaceFolder();
+    const states = filterSessionsByFolder(this.tracker.all(), folder);
+    const counts = countByStatus(states);
+    this.statusItem.text = statusBarText(counts);
+    this.statusItem.tooltip = statusBarTooltip(states);
   }
 
-  /**
-   * Record a user-driven tab rename. The lifecycle map key stays the terminal's
-   * original AQP_SESSION name (hooks keep reporting that forever); the new
-   * display name is aliased to it.
-   */
-  renameSession(
-    oldDisplayName: string,
-    newDisplayName: string,
-    stableSessionName: string
-  ): void {
-    this.sessionAliases.delete(oldDisplayName);
-    if (stableSessionName === newDisplayName) {
-      // Renaming back to the original creation-time name restores a direct
-      // sessions.get(name) hit, so no alias is needed.
-      this.sessionAliases.delete(newDisplayName);
-    } else {
-      this.sessionAliases.set(newDisplayName, stableSessionName);
-    }
-    const existing = this.sessions.get(stableSessionName);
-    if (existing !== undefined && existing.name !== newDisplayName) {
-      this.sessions.set(stableSessionName, {
-        ...existing,
-        name: newDisplayName,
-      });
-      this.refreshStatusBar();
-    }
-  }
-
-  /** Find the live terminal backing a stable session key (even after rename). */
-  findTerminalForSession(session: string): vscode.Terminal | undefined {
-    return vscode.window.terminals.find(
-      (t) => this.sessionKeyForTerminal(t) === session
-    );
-  }
-
-  /** Stable per-terminal key: display-name alias when renamed, else creation name. */
-  private sessionKeyForTerminal(t: vscode.Terminal): string {
-    return this.sessionAliases.get(t.name) ?? terminalCreationName(t);
-  }
-
-  private consumeOutput(terminal: vscode.Terminal, chunk: string, cwd?: string): void {
-    const session = this.sessionKeyForTerminal(terminal);
-    const state = this.sessions.get(session);
-    if (!state) return;
-    if (cwd) this.sessions.set(session, { ...state, cwd });
-    const parser = this.parsers.get(session) ?? new ProgramStatusParser();
-    this.parsers.set(session, parser);
-    const snapshot = parser.push(chunk);
-    const previousText = this.recentOutput.get(session) ?? "";
-    const output = (previousText + chunk).slice(-12000);
-    this.recentOutput.set(session, output);
-    if (snapshot) {
-      this.applyStatus(session, snapshot.status, "osc", {
-        blockedKind: snapshot.kind,
-        message: snapshot.msg,
-        title: snapshot.title,
-        app: snapshot.app,
-      });
-    } else if (!state.authoritative) {
-      const heuristic = detectHeuristicStatus(state.agentName, output);
-      if (heuristic) this.applyStatus(session, heuristic.status, "heuristic", { blockedKind: heuristic.reason });
-    }
-  }
-
-  private applyStatus(
-    session: string,
-    status: LifecycleStatus,
-    source: "osc" | "heuristic" | "exit",
-    details: Partial<SessionState> = {}
-  ): void {
-    const previous = this.sessions.get(session);
-    if (!previous || (previous.authoritative && source !== "osc")) return;
-    if (previous.status === "error" && status === "done") return;
-    const authoritative = source === "osc" || previous.authoritative;
-    if (previous.status === status && previous.message === details.message && previous.blockedKind === details.blockedKind) return;
-    const next = {
-      ...previous,
-      ...details,
-      status,
-      changedAt: Date.now(),
-      authoritative,
-      blockedKind: status === "blocked" ? details.blockedKind : undefined,
+  /** Filesystem access for legacy cleanup. */
+  private legacyIo(): LegacyIo {
+    return {
+      read: (file) => readIfExists(file),
+      write: (file, text) => writeFileAtomic(file, text),
+      remove: async (file) => {
+        await fs.promises.unlink(file);
+      },
     };
-    this.sessions.set(session, next);
-    this.refreshStatusBar();
-    if (previous.status !== status) this.maybeNotify(session, status, undefined, next.blockedKind, next.message ?? next.title);
+  }
+
+  /** Remove hooks and plugins that older versions installed. */
+  async removeAllHooks(): Promise<string[]> {
+    return cleanupLegacyHooks(this.legacyIo(), process.env, process.platform, os.homedir());
   }
 
   /**
-   * Recompute status-bar text + tooltip from the current sessions map,
-   * filtered to the active workspace folder. When no workspace is open, all
-   * sessions are shown (preserves pre-filter behavior). Also re-scoped on
-   * editor focus changes — see the onDidChangeActiveTextEditor subscription
-   * wired in activate().
+   * Strip legacy hooks once per extension version, silently. Without this, an
+   * upgrading user keeps spawning a `node` process on every agent turn for a
+   * hook that can no longer do anything. Silent because it is housekeeping, not
+   * a user action.
    */
-   refreshStatusBar(): void {
-     const folder = activeWorkspaceFolder();
-     const all = [...this.sessions.values()];
-     const states = filterSessionsByFolder(all, folder);
-     const counts = countByStatus(states);
-     this.statusItem.text = statusBarText(counts);
-     this.statusItem.tooltip = statusBarTooltip(states);
-   }
-
-  /** Remove only Agent Quickpick-owned global hooks and plugins. */
-  async removeAllHooks(): Promise<string[]> {
-    const touched: string[] = [];
-    for (const adapter of Object.values(LIFECYCLE_ADAPTERS)) {
-      const fsPath = adapter.kind === "command-hooks"
-        ? path.join(os.homedir(), adapter.configPath)
-        : path.join(adapter.resolveBaseDir(PLUGIN_ENV_SNAPSHOT, process.platform, os.homedir()), adapter.pluginPath);
-      if (adapter.kind === "plugin-file") {
-        if (!shouldRemovePluginFile(await readIfExists(fsPath), adapter.marker)) continue;
-        try { await fs.promises.unlink(fsPath); touched.push(fsPath); } catch { /* already removed */ }
-        continue;
-      }
-      try {
-        const parsed = readConfigJson(await fs.promises.readFile(fsPath, "utf8"));
-        if (!adapter.hasOurHooks(parsed)) continue;
-        await writeFileAtomic(fsPath, writeConfigJson(adapter.stripHooks(parsed)));
-        touched.push(fsPath);
-      } catch { /* absent or unreadable config: preserve it */ }
+  async autoCleanupLegacyHooks(): Promise<void> {
+    const flagKey = "legacyHooks.cleanedVersion";
+    const version = this.context.extension?.packageJSON?.version ?? "unknown";
+    if (this.context.globalState.get<string>(flagKey) === version) {
+      return;
     }
-    return touched;
+    const touched = await this.removeAllHooks();
+    await this.context.globalState.update(flagKey, version);
+    if (touched.length > 0) {
+      console.log(
+        `Agent Quickpick: removed lifecycle hooks left by an older version (${touched.join(", ")}).`
+      );
+    }
   }
 
   /**
    * One-time-per-workspace cleanup of the older *workspace-local* hooks a
-   * pre-global build wrote (`.claude/settings.local.json`, `.factory/settings.json`,
-   * `opencode.json` + `.opencode/agent-quickpick-lifecycle.mjs`). Strips only
-   * our own entries (by marker) and prunes the OpenCode plugin file. Silent — no
-   * prompt, no error surface — since it's housekeeping, not a user action.
+   * pre-global build wrote. Silent — housekeeping, not a user action.
    */
   async migrateWorkspaceHooks(): Promise<void> {
     const wsFolder = vscode.workspace.workspaceFolders?.[0];
@@ -1316,57 +1239,16 @@ export class LifecycleContext {
     if (this.context.globalState.get<boolean>(flagKey)) {
       return;
     }
-
-    const baseDir = wsFolder.uri.fsPath;
-    const stripJson = async (
-      rel: string,
-      strip: (parsed: unknown) => unknown,
-      has: (parsed: unknown) => boolean
-    ) => {
-      const p = path.join(baseDir, rel);
-      try {
-        const parsed = readConfigJson(await fs.promises.readFile(p, "utf8"));
-        if (has(parsed)) {
-          await fs.promises.writeFile(p, writeConfigJson(strip(parsed)), "utf8");
-        }
-      } catch {
-        // missing/unreadable — nothing to migrate
-      }
-    };
-
-    // Claude & Droid: same marker/schema as the global adapters, just at the old
-    // workspace paths.
-    await stripJson(
-      ".claude/settings.local.json",
-      (c) => CLAUDE_ADAPTER.stripHooks(c),
-      (c) => CLAUDE_ADAPTER.hasOurHooks(c)
-    );
-    await stripJson(
-      ".factory/settings.json",
-      (c) => DROID_ADAPTER.stripHooks(c),
-      (c) => DROID_ADAPTER.hasOurHooks(c)
-    );
-
-    // OpenCode (old): a file:// entry in opencode.json's plugin[] + a plugin
-    // .mjs on disk.
-    const OLD_OPENCODE_PLUGIN = ".opencode/agent-quickpick-lifecycle.mjs";
-    await stripJson(
-      "opencode.json",
-      (c) => stripOldOpencodePlugin(c),
-      (c) => hasOldOpencodePlugin(c)
-    );
-    try {
-      await fs.promises.unlink(path.join(baseDir, OLD_OPENCODE_PLUGIN));
-    } catch {
-      // already gone — fine
-    }
-
+    await stripWorkspaceLegacyHooks(this.legacyIo(), wsFolder.uri.fsPath);
     this.context.globalState.update(flagKey, true);
   }
 
   dispose(): void {
     clearInterval(this.pollTimer);
-    this.outputDisposable.dispose();
+    clearInterval(this.tickTimer);
+    for (const disposable of this.shellDisposables) {
+      disposable.dispose();
+    }
     this.closeDisposable.dispose();
     this.agentsConfigDisposable.dispose();
   }
@@ -1505,6 +1387,12 @@ export function activate(context: vscode.ExtensionContext) {
   // in this repo. Silent housekeeping — never blocks activation.
   lifecycleCtx.migrateWorkspaceHooks().catch(() => {
     // migration failures are non-fatal
+  });
+
+  // Strip hooks and plugins older versions installed, once per extension
+  // version. Silent, and never blocks activation.
+  lifecycleCtx.autoCleanupLegacyHooks().catch(() => {
+    // cleanup failures are non-fatal
   });
 
   // Bring already-installed hooks up to the current schema, with no prompt —

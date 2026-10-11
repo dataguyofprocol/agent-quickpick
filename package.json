@@ -2,7 +2,7 @@
   "name": "agent-quickpick",
   "displayName": "Agent Quickpick",
   "description": "Quick-pick launcher for agent CLI terminals — Claude, Opencode, Claude Proxy, Claude GLM, pi, oh-my-pi, Droid, Command Code, and your own — opened in the editor area with their own icon and tab color.",
-  "version": "0.12.3",
+  "version": "0.14.0",
   "publisher": "dataguyofprocol",
   "license": "MIT",
   "icon": "icons/icon.png",
@@ -15,7 +15,7 @@
   },
   "homepage": "https://github.com/dataguyofprocol/agent-quickpick#readme",
   "engines": {
-    "vscode": "^1.85.0"
+    "vscode": "^1.93.0"
   },
   "categories": [
     "Other"
@@ -47,6 +47,7 @@
     "pretest:unit": "npm run compile",
     "pretest": "npm run compile",
     "test": "npm run test:unit && node ./out/test/runTest.js",
+    "test:e2e": "npm run compile && node ./out/test/runE2E.js",
     "bench": "node --expose-gc out/test/bench/run.js",
     "prebench": "npm run compile"
   },
@@ -204,7 +205,17 @@
         "agentQuickpick.lifecycleNotifications": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Show a notification when a lifecycle-aware agent (Claude Code, Codex, Antigravity, OpenCode, pi, Droid) finishes a task or needs your input. Requires a **one-time global hook install** per agent (prompted automatically the first time you launch it — installed into your user-level agent config, e.g. `~/.claude/settings.json`, so it works in every repo). The hook only reports sessions launched from Agent Quickpick and no-ops elsewhere. Remove via the \"Remove Lifecycle Hooks\" command. Disable for silent operation."
+          "markdownDescription": "Show a notification when an agent finishes a task, fails, or is blocked waiting for you. Agents that implement the [OSC 7501 Program Status Protocol](https://www.superlogical.com/rex/docs/build/program-status) report their own state over the terminal; everything else is inferred from its window title, progress reports and output (see `#agentQuickpick.fallbackDetection#`). **Nothing is installed** and no agent configuration is touched. Only sessions launched from Agent Quickpick are tracked. Disable for silent operation."
+        },
+        "agentQuickpick.agentStatusReporters": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Give the Claude Code and OpenCode terminals this extension launches a small status reporter, so they say when they finish a turn or need your input. Claude Code gets `--settings` with hooks for that process only, merged with your own hooks; OpenCode (v2) gets a TUI plugin through `OPENCODE_CLI_CONFIG_CONTENT`, alongside your own plugins. Nothing is written to either agent's configuration. Not available on Windows. Turn this off to launch both agents exactly as configured; their status then falls back to inference."
+        },
+        "agentQuickpick.fallbackDetection": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Infer status for agents that don't emit OSC 7501, from their window title, `OSC 9` progress reports, and recent output. Heuristics only ever update the status bar and the sessions picker; a notification is raised only for an explicit permission/approval prompt, never for inferred progress. Turn this off to trust the protocol alone — sessions from agents that don't speak it then stay `unknown` until they exit."
         },
         "agentQuickpick.systemNotifications": {
           "type": "string",
@@ -244,7 +255,7 @@
       },
       {
         "command": "agentQuickpick.removeHooks",
-        "title": "Remove Lifecycle Hooks"
+        "title": "Remove Legacy Lifecycle Hooks"
       },
       {
         "command": "agentQuickpick.openKeybindings",

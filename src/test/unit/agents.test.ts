@@ -5,7 +5,11 @@
 
 import * as assert from "assert";
 
-import { BUILTIN_AGENTS, loadAgents } from "../../agents";
+import {
+  BUILTIN_AGENTS,
+  loadAgents,
+  programStatusEnv,
+} from "../../agents";
 
 suite("loadAgents", () => {
   test("returns built-in defaults when config is undefined", () => {
@@ -36,28 +40,33 @@ suite("loadAgents", () => {
   test("canonical agents ARE in the defaults", () => {
     const agents = loadAgents(undefined);
     const names = agents.map((a) => a.name);
-    for (const expected of ["Codex", "Antigravity", "Copilot", "Aider", "Goose", "Crush", "Amp", "Qwen", "Plandex", "Grok", "Cody", "Kilo", "Qodo"]) {
+    for (const expected of ["Codex", "Copilot", "Aider", "Goose", "Crush", "Amp", "Qwen", "Plandex", "Grok", "Cody", "Kilo", "Qodo"]) {
       assert.ok(names.includes(expected), `${expected} should be a default`);
     }
   });
 
-  test("Gemini is NOT a default (replaced by Antigravity when Gemini CLI sunset)", () => {
+  test("retired agents are not defaults", () => {
     const agents = loadAgents(undefined);
-    assert.ok(!agents.some((a) => a.name === "Gemini"), "Gemini should not be a built-in");
-    assert.ok(agents.some((a) => a.cmd === "agy"), "Antigravity (agy) should be a built-in");
+    for (const retired of ["Gemini", "Antigravity"]) {
+      assert.ok(
+        !agents.some((a) => a.name === retired),
+        `${retired} should not be a built-in agent any more`
+      );
+    }
+    assert.ok(!agents.some((a) => a.cmd === "agy"), "the agy CLI is no longer a default");
   });
 
-  test("every lifecycle-aware agent is a built-in (launch wiring depends on it)", () => {
-    // getAdapter/LIFECYCLE_ADAPTERS names must exist in the defaults, else
-    // launching that agent from the picker would skip hook env injection.
+  test("every agent with detection support is a built-in (launch wiring depends on it)", () => {
+    // These agents have fallback rule tables, so they must stay launchable from
+    // the picker for those rules to ever be reachable.
     const names = new Set(loadAgents(undefined).map((a) => a.name.toLowerCase()));
-    for (const expected of ["claude", "droid", "codex", "antigravity", "opencode", "pi"]) {
+    for (const expected of ["claude", "droid", "codex", "opencode", "pi"]) {
       assert.ok(names.has(expected), `${expected} must be a built-in agent`);
     }
   });
 
   test("pi and oh-my-pi are distinct built-ins, pi immediately before it", () => {
-    // Two different CLIs: `pi` (lifecycle-aware) and oh-my-pi's `omp`
+    // Two different CLIs: `pi` (reports OSC 7501) and oh-my-pi's `omp`
     // (launch-only). loadAgents matches by exact lowercased name, so the
     // overlap is harmless — but the ordering keeps oh-my-pi last, which the
     // defaults test above asserts.
@@ -161,5 +170,33 @@ suite("loadAgents", () => {
   test("built-in names are unique", () => {
     const names = loadAgents(undefined).map((a) => a.name.toLowerCase());
     assert.strictEqual(new Set(names).size, names.length, "built-in names must be unique");
+  });
+});
+
+suite("programStatusEnv", () => {
+  test("pi gets its documented OSC 7501 opt-in", () => {
+    // VS Code cannot answer the protocol's feature-detection query, and pi only
+    // reports after that answer; PI_PROGRAM_STATUS=1 is pi's own override.
+    assert.deepStrictEqual(programStatusEnv("pi", {}), { PI_PROGRAM_STATUS: "1" });
+    assert.deepStrictEqual(programStatusEnv("Pi", {}), { PI_PROGRAM_STATUS: "1" });
+    assert.deepStrictEqual(programStatusEnv(" pi ", {}), { PI_PROGRAM_STATUS: "1" });
+  });
+
+  test("an explicit user choice is never overridden", () => {
+    assert.strictEqual(programStatusEnv("pi", { PI_PROGRAM_STATUS: "0" }), undefined);
+    assert.strictEqual(programStatusEnv("pi", { PI_PROGRAM_STATUS: "1" }), undefined);
+    assert.deepStrictEqual(
+      programStatusEnv("pi", { PI_PROGRAM_STATUS: "  " }),
+      { PI_PROGRAM_STATUS: "1" },
+      "a blank value is not a choice"
+    );
+  });
+
+  test("no other agent gets env injected", () => {
+    // Claude Code and Droid also gate on the terminal's reply, but neither ships
+    // an override, so there is nothing truthful to set for them.
+    for (const name of ["Claude", "Codex", "OpenCode", "Droid", "Amp", "Terminal", "pi2", "oh-my-pi"]) {
+      assert.strictEqual(programStatusEnv(name, {}), undefined, name);
+    }
   });
 });

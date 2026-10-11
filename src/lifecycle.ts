@@ -1,190 +1,35 @@
 /**
- * Agent lifecycle awareness — shared core.
+ * Agent lifecycle awareness — presentation, and the pieces that need VS Code.
  *
- * Lets Agent Quickpick track per-session status (running / finished / waiting /
- * failed) for lifecycle-aware agents (Claude Code, Codex, Antigravity, OpenCode,
- * Droid) and surface it via notifications + a live status-bar count. Each
- * agent's hook mechanism is abstracted behind a {@link LifecycleAdapter}; the
- * shared core is agnostic to whether an agent uses command hooks
- * (Claude/Droid/Codex — Claude schema; Antigravity — named-registry schema) or
- * a file-based plugin (OpenCode).
+ * Where a status *comes from* lives elsewhere:
+ *  - `./program-status`  — the OSC 7501 Program Status Protocol (parsing + records)
+ *  - `./terminal-signals` — reading title/progress/text out of terminal output
+ *  - `./detect` + `./detect-manifests` — fallback rules for agents without OSC 7501
+ *  - `./session-tracker` — the per-terminal state machine that picks between them
+ *  - `./legacy-hooks`   — removal of hooks that older versions installed
  *
- * Pure functions are exported for unit testing; the HTTP server + polling are
- * VS Code-coupled and live at the bottom.
+ * What is left here is either pure presentation (status-bar text/tooltip, session
+ * filtering, notification copy, notify/sound command builders) or genuinely
+ * VS Code-coupled (the exit-status poller). Keep the pure helpers free of
+ * *runtime* `vscode` usage so the unit tier can import them without a host —
+ * type-only imports are fine, tsc elides them.
  */
 
-import * as http from "http";
 import * as path from "path";
 import * as vscode from "vscode";
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
+import type { LifecycleStatus, WaitingReason } from "./program-status";
+import type { SessionState } from "./session-tracker";
 
-export type LifecycleStatus = "idle" | "working" | "done" | "blocked" | "error" | "unknown";
-export type WaitingReason = "permission" | "question" | "auth";
-export type LegacyHookStatus = "running" | "finished" | "waiting" | "failed";
-type HookStatus = LifecycleStatus | LegacyHookStatus;
-
-export interface ProgramStatusRecord {
-  id?: string;
-  state: Exclude<LifecycleStatus, "unknown"> | "clear";
-  kind?: WaitingReason;
-  progress?: number;
-  app?: string;
-  title?: string;
-  msg?: string;
-}
-
-export interface ProgramStatusSnapshot {
-  records: ReadonlyMap<string, ProgramStatusRecord>;
-  status: LifecycleStatus;
-  kind?: WaitingReason;
-  msg?: string;
-  title?: string;
-  app?: string;
-}
-
-export const OSC7501_MAX_SEQUENCE = 4096;
-export const OSC7501_MAX_RECORDS = 256;
-const MAX_PENDING = OSC7501_MAX_SEQUENCE * 2;
-
-function decodeOscText(value: string, encodedLimit: number, decodedLimit: number): string | undefined {
-  if (value.length > encodedLimit || !/^[A-Za-z0-9+/]*={0,2}$/.test(value)) return undefined;
-  try {
-    const bytes = Buffer.from(value, "base64");
-    if (bytes.length > decodedLimit) return undefined;
-    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-    return /[\u0000-\u001f\u007f-\u009f]/.test(text) ? undefined : text;
-  } catch { return undefined; }
-}
-
-export function parseProgramStatusBody(body: string): ProgramStatusRecord | "query" | undefined {
-  if (body === "?") return "query";
-  if (!body || body.startsWith("?") || Buffer.byteLength(body, "utf8") + 8 > OSC7501_MAX_SEQUENCE) return undefined;
-  const fields: Record<string, string> = {};
-  for (const item of body.split(":")) {
-    const at = item.indexOf("=");
-    if (at < 1) continue;
-    const key = item.slice(0, at).trim();
-    const value = item.slice(at + 1).trim();
-    if (/^[a-z]{1,16}$/.test(key) && /^[A-Za-z0-9_.,+/=-]*$/.test(value)) fields[key] = value;
-  }
-  const state = fields.state;
-  if (!state || !["idle", "working", "done", "blocked", "error", "clear"].includes(state)) return undefined;
-  const record: ProgramStatusRecord = { state: state as ProgramStatusRecord["state"] };
-  if (fields.id !== undefined) {
-    const parts = fields.id.split("/");
-    if (fields.id.length > 128 || parts.length > 8 || !parts.every((p) => /^[A-Za-z0-9_.+-]{1,32}$/.test(p))) return undefined;
-    record.id = fields.id;
-  }
-  if (fields.app !== undefined) {
-    if (!/^[A-Za-z0-9_.+-]{1,32}$/.test(fields.app)) return undefined;
-    record.app = fields.app;
-  }
-  if (fields.kind !== undefined) {
-    if (state !== "blocked" || !["permission", "question", "auth"].includes(fields.kind)) return undefined;
-    record.kind = fields.kind as WaitingReason;
-  }
-  if (fields.progress !== undefined && (state === "working" || state === "blocked")) {
-    if (!/^(?:100|[1-9]?\d)$/.test(fields.progress)) return undefined;
-    record.progress = Number(fields.progress);
-  }
-  if (fields.msg !== undefined) {
-    const msg = decodeOscText(fields.msg, 2732, 2048);
-    if (msg === undefined) return undefined;
-    record.msg = msg;
-  }
-  if (fields.title !== undefined) {
-    const title = decodeOscText(fields.title, 256, 192);
-    if (title === undefined) return undefined;
-    record.title = title;
-  }
-  return record;
-}
-
-/** Parses fragmented OSC 7501 output and maintains the bounded record set. */
-export class ProgramStatusParser {
-  private pending = "";
-  private readonly records = new Map<string, { value: ProgramStatusRecord; used: number }>();
-  private clock = 0;
-  private hasReported = false;
-  private wasCleared = false;
-
-  push(chunk: string): ProgramStatusSnapshot | undefined {
-    this.pending = (this.pending + chunk).slice(-MAX_PENDING);
-    let changed = false;
-    while (true) {
-      const start = this.pending.indexOf("\u001b]7501;");
-      if (start < 0) { this.pending = this.pending.slice(-7); break; }
-      const bodyStart = start + 7;
-      let end = -1;
-      let term = 0;
-      let nestedStart = -1;
-      for (let i = bodyStart; i < this.pending.length; i++) {
-        if (this.pending.startsWith("\u001b]7501;", i)) { nestedStart = i; break; }
-        if (this.pending.charCodeAt(i) === 7) { end = i; term = 1; break; }
-        if (this.pending.charCodeAt(i) === 27) {
-          if (i + 1 === this.pending.length) break;
-          if (this.pending.charCodeAt(i + 1) === 92) { end = i; term = 2; break; }
-        }
-      }
-      if (nestedStart >= 0) { this.pending = this.pending.slice(nestedStart); continue; }
-      if (end < 0) {
-        this.pending = this.pending.slice(start);
-        if (this.pending.length > OSC7501_MAX_SEQUENCE) {
-          const next = this.pending.indexOf("\u001b]7501;", 1);
-          this.pending = next >= 0 ? this.pending.slice(next) : "";
-          continue;
-        }
-        break;
-      }
-      const full = this.pending.slice(start, end + term);
-      const body = this.pending.slice(bodyStart, end);
-      this.pending = this.pending.slice(end + term);
-      const report = Buffer.byteLength(full, "utf8") <= OSC7501_MAX_SEQUENCE ? parseProgramStatusBody(body) : undefined;
-      if (!report || report === "query") continue;
-      this.hasReported = true;
-      const id = report.id ?? "";
-      if (report.state === "clear") {
-        this.wasCleared = id === "";
-        for (const key of this.records.keys()) if (!id || key === id || key.startsWith(`${id}/`)) this.records.delete(key);
-      } else {
-        this.wasCleared = false;
-        this.records.set(id, { value: report, used: ++this.clock });
-        if (this.records.size > OSC7501_MAX_RECORDS) {
-          const oldest = [...this.records].sort((a, b) => a[1].used - b[1].used)[0];
-          if (oldest) this.records.delete(oldest[0]);
-        }
-      }
-      changed = true;
-    }
-    return changed ? this.snapshot() : undefined;
-  }
-
-  snapshot(): ProgramStatusSnapshot {
-    const records = new Map<string, ProgramStatusRecord>();
-    for (const [id, entry] of this.records) records.set(id, { ...entry.value });
-    const rank: Record<ProgramStatusRecord["state"], number> = { blocked: 0, error: 1, working: 2, done: 3, idle: 4, clear: 5 };
-    const selected = [...records.entries()]
-      .filter(([, record]) => record.state !== "clear")
-      .sort((a, b) => rank[a[1].state] - rank[b[1].state])[0];
-    if (!selected) return { records, status: this.wasCleared ? "unknown" : this.hasReported ? "idle" : "unknown" };
-    const [id, record] = selected;
-    let app = record.app;
-    const segments = id.split("/");
-    while (!app && segments.length) { segments.pop(); app = records.get(segments.join("/"))?.app; }
-    return { records, status: record.state === "clear" ? "unknown" : record.state, kind: record.kind, msg: record.msg, title: record.title, app };
-  }
-}
-
+export type { LifecycleStatus, WaitingReason };
+export type { SessionState } from "./session-tracker";
 
 /**
  * Human labels for each lifecycle status, using Herdr's vocabulary. Shared by
  * the status-bar tooltip and the session quickpick so the two never drift.
  * `unknown` is the honest label for a re-adopted terminal after a host reload:
- * we know an agent tab exists, but until a hook or exit-status poll confirms
- * its state, we don't claim it's working.
+ * we know an agent tab exists, but until a protocol report, a rule match, or an
+ * exit status confirms its state, we don't claim it's working.
  */
 export const STATUS_LABEL: Record<LifecycleStatus, string> = {
   idle: "idle", working: "working", done: "done", blocked: "blocked", error: "error", unknown: "unknown",
@@ -194,861 +39,6 @@ export const STATUS_LABEL: Record<LifecycleStatus, string> = {
 export const STATUS_GLYPH: Record<LifecycleStatus, string> = {
   idle: "○", working: "●", done: "✓", blocked: "⏸", error: "✗", unknown: "?",
 };
-
-/**
- * Why an agent is {@link LifecycleStatus.waiting}, when the source can tell.
- * Absent (`undefined`) = a plain "needs your input" wait with no known cause.
- *
- * - `"permission"` — the agent wants to run something (a command/tool) and is
- *   asking you to approve it. Claude reports this as free text in the
- *   Notification hook's stdin `message` ("…needs your permission to use Bash");
- *   OpenCode as the typed event `permission.asked`.
- * - `"question"` — the agent asked a question and needs your answer.
- *   OpenCode-only (`question.asked`); Claude's Notification hook does not
- *   distinguish this from a plain idle wait.
- */
-export interface SessionState {
-  /** Terminal tab name, e.g. "Claude" or "Codex (2)". */
-  name: string;
-  /** Base agent name, e.g. "Claude". */
-  agentName: string;
-  status: LifecycleStatus;
-  /** Epoch ms of last status change. */
-  changedAt: number;
-  /**
-   * Process exit code captured by the exit-status poller, when the status
-   * transition was caused by the agent's process exiting. Absent for
-   * hook-driven transitions (Stop/Notification/etc). Surfaced in the
-   * status-bar tooltip and the failure toast.
-   */
-  exitCode?: number;
-  /**
-   * The workspace folder this session was launched from (fsPath), captured at
-   * `trackSession` time. Immutable per session — used as the fallback for
-   * repo-scoping when no `cwd` has arrived from a hook yet (e.g. immediately
-   * after launch, or after a host reload re-adopted the terminal).
-   */
-  launchedInFolder?: string;
-  /**
-   * The agent's actual current working directory (fsPath), as reported by the
-   * most recent hook payload that carried `cwd`. Source of truth for
-   * repo-scoping when set (it accounts for `cd` inside the agent); falls back
-   * to {@link launchedInFolder} when absent.
-   */
-  cwd?: string;
-  /**
-   * Why the agent is waiting, when the last waiting payload could tell
-   * (see {@link WaitingReason}). Only meaningful while `status === "waiting"`;
-   * cleared on any other transition so a stale reason can never outlive its
-   * wait.
-   */
-  waitingReason?: WaitingReason;
-  blockedKind?: WaitingReason;
-  message?: string;
-  title?: string;
-  app?: string;
-  authoritative?: boolean;
-}
-
-/**
- * The raw payload POSTed by an agent hook to the lifecycle HTTP server.
- * Agents that lack a field send it unset; we read defensively.
- */
-export interface HookPayload {
-  marker?: string;
-  session?: string;
-  status?: LifecycleStatus | "running" | "finished" | "waiting" | "failed";
-  agentName?: string;
-  /**
-   * The agent's current working directory, when the agent's hook payload
-   * includes it (Claude Code does via stdin `cwd`; OpenCode via `process.cwd()`).
-   * Used to associate the session with a workspace folder for repo-scoped
-   * status-bar filtering. Absent for adapters/sources that don't supply it.
-   */
-  cwd?: string;
-  /**
-   * Why the agent is waiting, when the source knows. OpenCode sends the typed
-   * {@link WaitingReason} directly (`permission.asked` → `"permission"`,
-   * `question.asked` → `"question"`); Claude sends only the free-text
-   * `message`, classified via {@link classifyWaitingMessage}. Droid sends
-   * neither — its wait stays generic.
-   */
-  reason?: WaitingReason;
-  /**
-   * Free-text notification message from the agent's hook stdin (Claude's
-   * Notification event carries e.g. "Claude needs your permission to use
-   * Bash" / "Claude is waiting for your input"). Classified into a
-   * {@link WaitingReason} rather than shown verbatim — it's a stable English
-   * contract, not UI copy.
-   */
-  message?: string;
-}
-
-// ---------------------------------------------------------------------------
-// JSON config helpers (shared by all adapters that write JSON config files)
-// ---------------------------------------------------------------------------
-
-/**
- * Safely parse a JSON config file's text into an object. Missing, empty, or
- * malformed input → `{}` (so we never crash on a bad edit). Non-object top
- * levels (arrays, primitives) also → `{}`.
- */
-export function readConfigJson(text: string): unknown {
-  if (typeof text !== "string" || text.trim() === "") {
-    return {};
-  }
-  try {
-    const parsed = JSON.parse(text);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? parsed
-      : {};
-  } catch {
-    return {};
-  }
-}
-
-/**
- * Pretty-print a config object as 2-space-indented JSON with a trailing
- * newline. Stable so install → remove round-trips are deterministic.
- */
-export function writeConfigJson(parsed: unknown): string {
-  return JSON.stringify(parsed, null, 2) + "\n";
-}
-
-/**
- * Shallow-clone an object-typed config value. Non-objects → `{}`.
- */
-function cloneObject(value: unknown): Record<string, unknown> {
-  if (value && typeof value === "object" && !Array.isArray(value)) {
-    return { ...(value as Record<string, unknown>) };
-  }
-  return {};
-}
-
-// ---------------------------------------------------------------------------
-// Lifecycle adapter interface
-// ---------------------------------------------------------------------------
-
-/**
- * Lifecycle hooks are installed **globally** (once per agent, into the agent's
- * user-level config), not per-workspace. Because the hook payload is driven by
- * the `AQP_HOOK_URL` / `AQP_SESSION` env we inject into each terminal we launch
- * (see {@link HOOK_ENV}), a single global hook routes correctly to whichever
- * VS Code window launched the terminal, in any repo — and no-ops for agent
- * sessions we didn't launch (the guard in {@link buildNodeHookCommand}).
- *
- * Two install mechanisms, discriminated by {@link BaseAdapter.kind}:
- *  - "command-hooks" (Claude, Droid): edit a JSON config file, merging our
- *    `node -e` command hooks. Install/remove are idempotent mirror images
- *    identified by {@link BaseAdapter.marker}, so a user editing the file in
- *    between never confuses removal.
- *  - "plugin-file" (OpenCode, pi): drop a self-contained plugin/extension file
- *    into a dir the agent auto-loads. Install = write file; remove = delete it.
- *    Both are guarded by {@link BaseAdapter.marker}: a file at the target path
- *    that isn't ours is never overwritten and never deleted.
- */
-export type AdapterKind = "command-hooks" | "plugin-file";
-
-interface BaseAdapter {
-  /** Human name matching BUILTIN_AGENTS, e.g. "Claude". */
-  readonly agentName: string;
-  /**
-   * A unique marker string embedded in the generated hook/plugin so it is
-   * unambiguously ours. Never reused across adapters.
-   */
-  readonly marker: string;
-  readonly kind: AdapterKind;
-}
-
-/**
- * An agent whose hooks live in a JSON config file as `node -e` command hooks
- * (Claude & Droid share this schema).
- */
-export interface CommandHookAdapter extends BaseAdapter {
-  readonly kind: "command-hooks";
-  /**
-   * Path (relative to the user's home dir) of the global config file to edit,
-   * e.g. ".claude/settings.json".
-   */
-  readonly configPath: string;
-
-  /**
-   * Merge our hooks into an already-parsed config object. Idempotent: merging
-   * twice produces the same result as merging once. Must not clobber keys the
-   * user added themselves.
-   */
-  mergeHooks(
-    parsedConfig: unknown,
-    hookUrl: string,
-    session: string,
-    portFilePath: string
-  ): unknown;
-
-  /**
-   * Strip *only* our hooks (by {@link BaseAdapter.marker}) from a parsed config
-   * object. Idempotent. Must leave user hooks byte-for-byte intact. Prunes an
-   * empty `hooks` object if removing ours empties it.
-   */
-  stripHooks(parsedConfig: unknown): unknown;
-
-  /** True iff our hooks (any schema version) are present in a parsed config. */
-  hasOurHooks(parsedConfig: unknown): boolean;
-
-  /**
-   * True iff a hook of ours written by the current {@link HOOK_SCHEMA_VERSION}
-   * is present for **every** event this adapter wires. False (not just "absent")
-   * signals `installHook` should rewrite — see
-   * `LifecycleContext.autoUpgradeHooks`. Per-event, so a config missing one
-   * event's hook self-heals instead of passing as current.
-   */
-  hasCurrentHooks(parsedConfig: unknown): boolean;
-}
-
-/**
- * An agent whose hook is a self-contained plugin file the agent auto-loads from
- * a well-known dir (OpenCode, pi). Install writes the file; remove deletes it;
- * detection is file existence plus {@link BaseAdapter.marker} in the content.
- */
-export interface PluginFileAdapter extends BaseAdapter {
-  readonly kind: "plugin-file";
-  /**
-   * Path of the plugin/extension file we write, **relative to the dir returned
-   * by {@link PluginFileAdapter.resolveBaseDir}** (not to the user's home dir —
-   * that's the command-hook convention) — e.g.
-   * "plugin/agent-quickpick-lifecycle.js" for OpenCode.
-   */
-  readonly pluginPath: string;
-  /**
-   * Resolve the agent's auto-load base dir that {@link pluginPath} is relative
-   * to, honoring the agent's own env override and verifying the result is
-   * absolute for the target platform (throws otherwise). Pure — fed an env
-   * snapshot by the caller, never reads `process.env` — so it is unit-testable
-   * per platform.
-   */
-  resolveBaseDir(
-    env: NodeJS.ProcessEnv,
-    platform: string,
-    homedir: string
-  ): string;
-  /**
-   * Generate the plugin file's source (embeds the hook URL as a fallback, and
-   * `portFilePath` so a stale-env session can still find the current server —
-   * see {@link buildNodeHookCommand}'s doc for the same resolution order).
-   */
-  buildSource(hookUrl: string, session: string, portFilePath: string): string;
-}
-
-export type LifecycleAdapter = CommandHookAdapter | PluginFileAdapter;
-
-// ---------------------------------------------------------------------------
-// Plugin-file marker guard
-// ---------------------------------------------------------------------------
-
-/**
- * True when it is safe to write our plugin file at the target path.
- *
- * The dirs we drop plugin files into are shared with the user and with other
- * tools (pi's `extensions/` in particular is where herdr, cmux, and orca all
- * install their own integrations). A file already at *our* path that lacks our
- * {@link BaseAdapter.marker} was put there by someone else — a user's own
- * plugin that happens to share the name, or a hand-written replacement for
- * ours — and clobbering it silently destroys their work.
- *
- * @param existing file content, or `undefined` when the file doesn't exist
- * @returns true when absent (fresh install) or when the content is ours
- *          (regenerate); false when a foreign file is in the way.
- */
-export function shouldWritePluginFile(
-  existing: string | undefined,
-  marker: string
-): boolean {
-  return existing === undefined || existing.includes(marker);
-}
-
-/**
- * True when it is safe to delete our plugin file. Mirror image of
- * {@link shouldWritePluginFile} minus the absent case: removal only ever
- * unlinks a file we can prove we wrote, so "Remove Lifecycle Hooks" can never
- * delete a user's own plugin that shares the path.
- */
-export function shouldRemovePluginFile(
-  existing: string | undefined,
-  marker: string
-): boolean {
-  return existing !== undefined && existing.includes(marker);
-}
-
-// ---------------------------------------------------------------------------
-// Command-hook helpers (shared by Claude & Droid, which use the same schema)
-// ---------------------------------------------------------------------------
-
-/**
- * Bumped whenever the generated hook command/plugin source changes shape
- * (new events wired, new payload fields, new URL-resolution strategy). Embedded
- * as a `<marker>:v<N>` token alongside the marker so an already-installed hook
- * can be told apart from a stale one written by an older extension version —
- * see {@link hasCurrentCommandHooks} and `LifecycleContext.autoUpgradeHooks`
- * (extension.ts), which silently rewrites stale installs on activation so
- * existing users get new hook behavior without reinstalling anything.
- */
-export const HOOK_SCHEMA_VERSION = 4;
-
-/** The version tag embedded alongside a marker; shared by embed + detect sites. */
-function versionTag(marker: string): string {
-  return `${marker}:v${HOOK_SCHEMA_VERSION}`;
-}
-
-/**
- * How a generated hook computes the report it POSTs.
- *
- * Everything here is a **compile-time constant written by our own adapter
- * code** — never user input — so embedding these expressions in the generated
- * `node -e` script adds no injection surface beyond what the builder already
- * escapes (hook URL, session, port-file path).
- *
- * Most agents need only the builder's positional `status` argument (a
- * constant). The optional expressions exist for agents whose hook payload
- * itself carries enough signal to derive the report — e.g. Antigravity's
- * `Stop` stdin distinguishes `terminationReason: "error"` (crash) from
- * `fullyIdle: false` (background work still running), which a constant can't.
- */
-export interface HookReportSpec {
-  /**
-   * Constant {@link WaitingReason} for this event — e.g. Codex's
-   * `PermissionRequest` is by definition a permission ask, so its hook can
-   * report `reason: "permission"` instead of relying on free-text
-   * classification downstream.
-   */
-  reason?: WaitingReason;
-  /**
-   * JS expression evaluated against the parsed stdin JSON (`j`) producing the
-   * LifecycleStatus to report. When set, it overrides the builder's
-   * positional `status` argument. Must use only single quotes and no
-   * backslashes (the script travels inside `node -e "..."`).
-   */
-  statusExpr?: string;
-  /**
-   * JS expression producing a `WaitingReason | undefined`. When set, it
-   * overrides {@link reason}. `undefined` results are dropped by
-   * `JSON.stringify`, matching {@link HookPayload.reason} optionality.
-   */
-  reasonExpr?: string;
-  /**
-   * JS expression producing the agent's working directory (empty string when
-   * absent). Default: the stdin `j?.cwd` field (Claude/Codex snake_case
-   * payloads). Antigravity instead reports `workspacePaths` (camelCase).
-   */
-  cwdExpr?: string;
-}
-
-/**
- * Socket timeout (ms) for hook POSTs, shared by all three generated surfaces:
- * the `node -e` hook command and the OpenCode / pi plugin files. Two seconds
- * is long enough for a local POST, short enough that a hung server can't stall
- * the agent CLI's hook pipeline.
- */
-export const HOOK_TIMEOUT_MS = 2000;
-
-/**
- * Generate a self-contained `node -e` command that reads stdin JSON, reads the
- * lifecycle server URL + session name from env, and POSTs a hook payload to the
- * server. Embeds the marker (+ schema version tag) as a comment + payload field
- * so the hook is unambiguously ours and its generation is detectable.
- *
- * The report (status/reason/cwd) is computed per {@link HookReportSpec}: a
- * constant by default, or derived from the parsed stdin JSON via the spec's
- * expressions for agents whose payloads carry that signal.
- *
- * URL resolution order: the port file at `portFilePath` (rewritten with the
- * current port on every extension activation — see `startLifecycleServer`'s
- * caller in extension.ts) → `AQP_HOOK_URL` env (frozen at terminal-launch time,
- * so stale after any restart) → the URL baked in at install time. Checking the
- * port file first means a terminal opened *before* an extension restart still
- * reaches the new server on its very next hook event, with no relaunch needed
- * — the on-disk hook command itself is re-read fresh by the agent CLI every
- * time, unlike the terminal's env.
- *
- * Path-free → survives extension version updates regardless of install path.
- * Uses only Node built-ins (`http`, `fs`), so it works on any machine with Node.
- */
-export function buildNodeHookCommand(
-  hookUrl: string,
-  session: string,
-  marker: string,
-  status: HookStatus,
-  portFilePath: string,
-  spec: HookReportSpec = {}
-): string {
-  // Inline-escape for single-quoted JavaScript string literals inside node -e.
-  const escapedUrl = hookUrl
-    .replace(/\\/g, "\\\\")
-    .replace(/'/g, "\\'")
-    .replace(/"/g, '\\"');
-  const escapedPortFilePath = portFilePath
-    .replace(/\\/g, "\\\\")
-    .replace(/'/g, "\\'")
-    .replace(/"/g, '\\"');
-  const escapedSession = session
-    .replace(/\\/g, "\\\\")
-    .replace(/'/g, "\\'");
-  // Report fragments. Constant path keeps the historical generated shape
-  // (`status:'finished'`, `cwd:j?.cwd||''`); the expression path splices the
-  // spec's compile-time-constant JS in, parenthesized so operator precedence
-  // can't leak into the surrounding object literal.
-  const statusFragment = spec.statusExpr ? `(${spec.statusExpr})` : `'${status}'`;
-  const reasonFragment = spec.reasonExpr
-    ? `(${spec.reasonExpr})`
-    : spec.reason
-      ? `'${spec.reason}'`
-      : "undefined";
-  const cwdFragment = spec.cwdExpr ? `(${spec.cwdExpr})||''` : "j?.cwd||''";
-  // Guard first: this hook is installed globally, so it runs on *every* Stop/
-  // Notification for this agent — even sessions we didn't launch. When
-  // AQP_SESSION is absent (not one of ours), exit immediately: a no-op, no
-  // socket, no dead-port noise.
-  return `node -e "/*${versionTag(marker)}*/if(!process.env.AQP_SESSION){process.exit(0)}const h=require('http'),fs=require('fs');let fileUrl;try{fileUrl=JSON.parse(fs.readFileSync('${escapedPortFilePath}','utf8')).url}catch(e){}const u=fileUrl||process.env.AQP_HOOK_URL||'${escapedUrl}';let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d||'{}');const b=JSON.stringify({marker:'${marker}',session:process.env.AQP_SESSION||'${escapedSession}',status:${statusFragment},agentName:'${marker.split(':')[1]||''}',cwd:${cwdFragment},reason:${reasonFragment},message:j?.message||''});const r=h.request(u,{method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(b)}});r.setTimeout(${HOOK_TIMEOUT_MS},()=>r.destroy());r.on('error',()=>{});r.end(b)}catch(e){}})"`;
-}
-
-/**
- * The env vars injected into each lifecycle-aware agent's terminal so its hooks
- * can reach back to our server. `strictEnv: false` (the default) means these
- * are *added* to the inherited environment, not replacing it.
- */
-export const HOOK_ENV = (hookUrl: string, session: string) => ({
-  AQP_HOOK_URL: hookUrl,
-  AQP_SESSION: session,
-});
-
-/**
- * A single hook object inside an entry's `hooks` array:
- * `{ type: "command", command: "..." }`. Returns the command string when the
- * value has that shape, else undefined.
- */
-function hookCommand(hook: unknown): string | undefined {
-  if (!hook || typeof hook !== "object") return undefined;
-  const command = (hook as Record<string, unknown>).command;
-  return typeof command === "string" ? command : undefined;
-}
-
-/** True if this hook object is one of ours (any schema version). */
-function isOurHook(hook: unknown, marker: string): boolean {
-  return hookCommand(hook)?.includes(marker) ?? false;
-}
-
-/** True if this hook object is ours *and* written by the current version. */
-function isCurrentHook(hook: unknown, marker: string): boolean {
-  return hookCommand(hook)?.includes(versionTag(marker)) ?? false;
-}
-
-/**
- * Filter an event's entry array, rewriting each entry's inner `hooks` array with
- * `keepHook` and dropping only entries our filtering left empty. Entries that
- * never contained a hook of ours (and any other keys they carry, e.g. `matcher`)
- * come through untouched, so a user hook sharing an entry with ours survives —
- * this is why filtering happens per *hook*, not per entry.
- */
-function filterEventEntries(
-  entries: readonly unknown[],
-  marker: string,
-  keepHook: (hook: unknown) => boolean
-): unknown[] {
-  const result: unknown[] = [];
-  for (const entry of entries) {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
-      result.push(entry);
-      continue;
-    }
-    const record = entry as Record<string, unknown>;
-    const hooks = record.hooks;
-    if (!Array.isArray(hooks) || !hooks.some((h) => isOurHook(h, marker))) {
-      result.push(entry); // none of ours here — leave it exactly as-is
-      continue;
-    }
-    const keptHooks = hooks.filter((h) => !isOurHook(h, marker) || keepHook(h));
-    // Only ours were in this entry and all got dropped → drop the entry too, so
-    // we don't leave `{ hooks: [] }` litter behind.
-    if (keptHooks.length === 0) continue;
-    result.push({ ...record, hooks: keptHooks });
-  }
-  return result;
-}
-
-/**
- * Merge our command hooks into a Claude/Droid-style config for the given events.
- * Schema: `{ hooks: { <Event>: [ { matcher?, hooks: [ { type, command } ] } ] } }`.
- *
- * Replaces rather than accumulates: any hook of ours written by an *older*
- * {@link HOOK_SCHEMA_VERSION} is dropped from the event before the current form
- * is appended, so upgrading never leaves two generations of our hook firing side
- * by side. An event that already has the current hook is left untouched, which
- * makes this idempotent; an event missing it gets it, even when *other* events
- * are already current (a partial install self-heals).
- *
- * User hooks — including one that shares an entry with ours — are preserved.
- *
- * This is used by both the Claude and Droid adapters (identical schema). We keep
- * it here so the merge/strip logic is tested once and shared.
- */
-export function mergeCommandHooks(
-  parsedConfig: unknown,
-  events: readonly string[],
-  hookUrl: string,
-  session: string,
-  marker: string,
-  portFilePath: string
-): unknown {
-  const config = cloneObject(parsedConfig);
-  const hooksSection = cloneObject(config.hooks);
-
-  for (const event of events) {
-    const existing = Array.isArray(hooksSection[event])
-      ? (hooksSection[event] as unknown[])
-      : [];
-
-    // Drop stale generations of ours; keep current ones (and everything else).
-    const arr = filterEventEntries(existing, marker, (h) =>
-      isCurrentHook(h, marker)
-    );
-
-    const already = arr.some(
-      (entry) =>
-        entry &&
-        typeof entry === "object" &&
-        Array.isArray((entry as Record<string, unknown>).hooks) &&
-        ((entry as Record<string, unknown>).hooks as unknown[]).some((h) =>
-          isCurrentHook(h, marker)
-        )
-    );
-    if (!already) {
-      // One entry per report we want this event to POST.
-      const reports = reportsForEvent(event);
-      for (const report of reports) {
-        const command = buildNodeHookCommand(
-          hookUrl,
-          session,
-          marker,
-          report.status,
-          portFilePath,
-          report.spec ?? {}
-        );
-        arr.push({
-          hooks: [{ type: "command", command }],
-        });
-      }
-    }
-    hooksSection[event] = arr;
-  }
-
-  config.hooks = hooksSection;
-  return config;
-}
-
-/**
- * Strip our command hooks (by marker, any schema version) from a Claude/Droid-
- * style config. Idempotent. Prunes an event left with no entries and an empty
- * `hooks` section. Leaves user hooks intact even when one shares an entry with
- * ours — see {@link filterEventEntries}. Events that contain none of our hooks
- * (including a pre-existing empty array) are left exactly as-is, so
- * install → remove is a true round-trip.
- */
-export function stripCommandHooks(
-  parsedConfig: unknown,
-  marker: string
-): unknown {
-  const config = cloneObject(parsedConfig);
-  const hooksSection = cloneObject(config.hooks);
-
-  for (const event of Object.keys(hooksSection)) {
-    const arr = hooksSection[event];
-    if (!Array.isArray(arr)) continue;
-
-    // Only touch events that actually contain a hook of ours. This preserves
-    // everything else byte-for-byte — including a user's empty `[]` array,
-    // which must not be pruned by a round-trip that never owned it.
-    const hasOurs = arr.some(
-      (entry) =>
-        entry &&
-        typeof entry === "object" &&
-        !Array.isArray(entry) &&
-        Array.isArray((entry as Record<string, unknown>).hooks) &&
-        ((entry as Record<string, unknown>).hooks as unknown[]).some((h) =>
-          isOurHook(h, marker)
-        )
-    );
-    if (!hasOurs) continue;
-
-    const filtered = filterEventEntries(arr, marker, () => false);
-    if (filtered.length === 0) {
-      delete hooksSection[event];
-    } else {
-      hooksSection[event] = filtered;
-    }
-  }
-
-  if (Object.keys(hooksSection).length === 0) {
-    delete config.hooks;
-  } else {
-    config.hooks = hooksSection;
-  }
-  return config;
-}
-
-/**
- * Check whether our command hooks (by marker) exist in a config, regardless of
- * which schema version wrote them. Used for dedup/removal, where any version of
- * our hook must be recognized as "ours."
- */
-export function hasCommandHooks(parsedConfig: unknown, marker: string): boolean {
-  if (!parsedConfig || typeof parsedConfig !== "object") return false;
-  return JSON.stringify(parsedConfig).includes(marker);
-}
-
-/**
- * Check whether our command hooks in a config were written by the *current*
- * {@link HOOK_SCHEMA_VERSION}. False for a config with no hooks of ours at all,
- * and false for one written by an older version — both cases mean
- * `installHook` should (re)write the current form. Used by
- * `LifecycleContext.autoUpgradeHooks` (extension.ts) to silently upgrade
- * existing users' installed hooks with no prompt.
- */
-export function hasCurrentCommandHooks(
-  parsedConfig: unknown,
-  marker: string,
-  events: readonly string[]
-): boolean {
-  if (!parsedConfig || typeof parsedConfig !== "object") return false;
-  const hooksSection = (parsedConfig as Record<string, unknown>).hooks;
-  if (!hooksSection || typeof hooksSection !== "object") return false;
-  const section = hooksSection as Record<string, unknown>;
-
-  // Every wired event must carry a current hook of ours. Checking per-event
-  // (rather than "the version tag appears somewhere in the file") means a
-  // half-installed config — one event hand-deleted, or a write interrupted
-  // mid-merge — is reported stale and re-merged, instead of looking current
-  // forever because one sibling event still has its tag.
-  return events.every((event) => {
-    const arr = section[event];
-    if (!Array.isArray(arr)) return false;
-    return arr.some(
-      (entry) =>
-        entry &&
-        typeof entry === "object" &&
-        Array.isArray((entry as Record<string, unknown>).hooks) &&
-        ((entry as Record<string, unknown>).hooks as unknown[]).some((h) =>
-          isCurrentHook(h, marker)
-        )
-    );
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Named-registry hook helpers (Antigravity)
-// ---------------------------------------------------------------------------
-
-/**
- * One event wiring inside a **named-registry** hooks file (Antigravity's
- * `hooks.json`): `{ "<hookName>": { enabled?, <Event>: [...] } }`.
- *
- * Two per-event array shapes, discriminated by {@link matcher}:
- *  - **Tool events** (`PreToolUse`/`PostToolUse`) use matcher entries —
- *    `{ matcher, hooks: [{ type, command, timeout? }] }` — the same inner
- *    shape as the Claude schema, so {@link filterEventEntries} applies.
- *  - **Lifecycle events** (`Stop`, `PreInvocation`, `PostInvocation`) hold
- *    the handlers flat — `[{ type, command, timeout? }]` — with no matcher.
- */
-export interface NamedHookEventSpec {
-  /** Antigravity event name, e.g. `"Stop"`, `"PreToolUse"`. */
-  event: string;
-  /**
-   * Tool-name regex for tool-level events. Omit for lifecycle events, where
-   * Antigravity ignores matchers and expects the flat handler shape.
-   */
-  matcher?: string;
-  /** Fallback status for the generated command (see {@link HookReportSpec}). */
-  status: HookStatus;
-  /** How the generated command computes the report it POSTs. */
-  spec?: HookReportSpec;
-}
-
-/**
- * Merge our named hook into an Antigravity-style `hooks.json`.
- *
- * Our entry lives under a single {@link hookName} (e.g. `"agent-quickpick"`).
- * Any pre-existing keys of that entry are preserved — most importantly a
- * user's `enabled: false` toggle (from agy's `/hooks disable`): an upgrade
- * rewrites the commands but must never flip the user's toggle back on.
- * Other named hooks in the file are untouched entirely.
- *
- * Same guarantees as {@link mergeCommandHooks}: idempotent, replaces stale
- * generations of ours instead of appending beside them, and heals a
- * partially-written entry per event.
- */
-export function mergeNamedHooks(
-  parsedConfig: unknown,
-  hookName: string,
-  events: readonly NamedHookEventSpec[],
-  hookUrl: string,
-  session: string,
-  marker: string,
-  portFilePath: string
-): unknown {
-  const config = cloneObject(parsedConfig);
-  const entry = cloneObject(config[hookName]);
-
-  for (const ev of events) {
-    const current = buildNodeHookCommand(
-      hookUrl,
-      session,
-      marker,
-      ev.status,
-      portFilePath,
-      ev.spec ?? {}
-    );
-    const existing = Array.isArray(entry[ev.event]) ? (entry[ev.event] as unknown[]) : [];
-    if (ev.matcher !== undefined) {
-      // Matcher shape: drop stale generations of ours per entry, keep the rest.
-      const arr = filterEventEntries(existing, marker, (h) => isCurrentHook(h, marker));
-      const already = arr.some(
-        (ent) =>
-          ent &&
-          typeof ent === "object" &&
-          Array.isArray((ent as Record<string, unknown>).hooks) &&
-          ((ent as Record<string, unknown>).hooks as unknown[]).some((h) =>
-            isCurrentHook(h, marker)
-          )
-      );
-      if (!already) {
-        arr.push({ matcher: ev.matcher, hooks: [{ type: "command", command: current }] });
-      }
-      entry[ev.event] = arr;
-    } else {
-      // Flat shape: the handlers sit directly in the event array. Filter
-      // per handler (junk entries without a command pass through).
-      const arr = existing.filter(
-        (h) => !isOurHook(h, marker) || isCurrentHook(h, marker)
-      );
-      if (!arr.some((h) => isCurrentHook(h, marker))) {
-        arr.push({ type: "command", command: current });
-      }
-      entry[ev.event] = arr;
-    }
-  }
-
-  config[hookName] = entry;
-  return config;
-}
-
-/**
- * Strip our named hook from an Antigravity-style `hooks.json`. Idempotent.
- * Removes only commands carrying our marker — from both the matcher-entry and
- * flat-handler shapes — leaving user handlers (even ones inside our entry)
- * intact. Prunes events left empty, and drops our entry entirely when no
- * events remain: an entry holding nothing but `enabled` is a toggle on a hook
- * that no longer exists, not user content (same "absent == empty" posture the
- * Claude-schema strip pins for wired events). Other named hooks are never
- * touched.
- */
-export function stripNamedHooks(
-  parsedConfig: unknown,
-  hookName: string,
-  marker: string
-): unknown {
-  const config = cloneObject(parsedConfig);
-  const entry = config[hookName];
-  if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
-    return config; // nothing shaped like ours at this key
-  }
-  const record = { ...(entry as Record<string, unknown>) };
-
-  for (const event of Object.keys(record)) {
-    const arr = record[event];
-    if (!Array.isArray(arr)) continue;
-    // Two passes, each a no-op on the other's shape: matcher entries first
-    // (filters inner hooks arrays), then flat handlers (filtered directly).
-    const afterEntries = filterEventEntries(arr, marker, () => false);
-    const stripped = afterEntries.filter((h) => !isOurHook(h, marker));
-    if (stripped.length === 0) {
-      delete record[event];
-    } else {
-      record[event] = stripped;
-    }
-  }
-
-  // Drop the entry when only non-event keys (e.g. `enabled`) remain.
-  const hasEvents = Object.keys(record).some((k) => Array.isArray(record[k]));
-  if (!hasEvents) {
-    delete config[hookName];
-  } else {
-    config[hookName] = record;
-  }
-  return config;
-}
-
-/**
- * Check whether every wired event of our named hook carries a command written
- * by the current {@link HOOK_SCHEMA_VERSION}. Deliberately ignores the
- * entry's `enabled` flag: a user-disabled hook that is current must not read
- * as stale (a rewrite would be pointless churn), while a disabled *stale* hook
- * still reads stale — and {@link mergeNamedHooks} rewrites its commands while
- * preserving the user's toggle.
- */
-export function hasCurrentNamedHooks(
-  parsedConfig: unknown,
-  hookName: string,
-  marker: string,
-  events: readonly NamedHookEventSpec[]
-): boolean {
-  if (!parsedConfig || typeof parsedConfig !== "object") return false;
-  const entry = (parsedConfig as Record<string, unknown>)[hookName];
-  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
-  const record = entry as Record<string, unknown>;
-
-  return events.every((ev) => {
-    const arr = record[ev.event];
-    if (!Array.isArray(arr)) return false;
-    return arr.some((item) => {
-      if (!item || typeof item !== "object") return false;
-      const candidate = item as Record<string, unknown>;
-      // Flat handler: the item itself is the command hook.
-      if (typeof candidate.command === "string") {
-        return candidate.command.includes(versionTag(marker));
-      }
-      // Matcher entry: the item wraps an inner hooks array.
-      if (Array.isArray(candidate.hooks)) {
-        return (candidate.hooks as unknown[]).some((h) => isCurrentHook(h, marker));
-      }
-      return false;
-    });
-  });
-}
-
-
-/**
- * Map a Claude/Droid/Codex event name to the reports we want it to POST.
- * `Stop` → the agent finished a turn. `Notification` → the agent needs input.
- * `UserPromptSubmit` → the user sent a new message, so the agent is working
- * again (without this, status wrongly stays "done" for the entire next turn
- * until the next Stop fires — the bar would lie while the agent is mid-work).
- * `PermissionRequest` (Codex) → the agent wants a tool/command approved, a
- * typed signal — so the hook reports the waiting *reason* directly instead of
- * relying on free-text classification downstream.
- */
-function reportsForEvent(event: string): { status: HookStatus; spec?: HookReportSpec }[] {
-  switch (event) {
-    case "Stop":
-      return [{ status: "finished" }];
-    case "Notification":
-      return [{ status: "waiting" }];
-    case "SessionStart":
-      return [{ status: "running" }];
-    case "UserPromptSubmit":
-      return [{ status: "running" }];
-    case "PermissionRequest":
-      return [{ status: "waiting", spec: { reason: "permission" } }];
-    default:
-      return [{ status: "running" }];
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Status-bar + notification rendering (pure, tested)
@@ -1066,11 +56,11 @@ export function countByStatus(states: SessionState[]): Record<LifecycleStatus, n
 }
 
 /**
- * Render the status-bar item text. All-zero → the static default (preserves
- * pre-lifecycle behavior). Otherwise a compact live count:
- * `$(agent-quickpick) 2● 1✓ 1⏸ 1✗` (only non-zero groups shown). `unknown`
- * sessions render as `○` (hollow) so re-adopted terminals after a host reload
- * are visually distinct from confirmed-working ones.
+ * Render the status-bar item text. All-zero → the static default. Otherwise a
+ * compact live count, most attention-worthy first:
+ * `$(agent-quickpick) 1⏸ 1✗ 2✓ 1●` (only non-zero groups are shown). `unknown`
+ * renders as `?` so re-adopted terminals after a host reload are visually
+ * distinct from agents whose state we actually know.
  */
 export function statusBarText(counts: Record<LifecycleStatus, number>): string {
   const glyph = "$(agent-quickpick)";
@@ -1091,9 +81,12 @@ export function statusBarText(counts: Record<LifecycleStatus, number>): string {
 /**
  * Render the status-bar tooltip: a per-session list, most-recently-changed
  * first. Empty → a generic description. When a session's `workspaceFolder` is
- * known (either via a hook-reported `cwd` or its launch folder), the folder's
- * basename is appended so the same agent across multiple repos is
+ * known (either via a shell-integration `cwd` or its launch folder), the
+ * folder's basename is appended so the same agent across multiple repos is
  * disambiguated in the tooltip.
+ *
+ * A session that reported `progress` shows its percentage, so a long build or
+ * deploy conveys more than "working".
  */
 export function statusBarTooltip(states: SessionState[]): string {
   if (states.length === 0) {
@@ -1104,18 +97,20 @@ export function statusBarTooltip(states: SessionState[]): string {
     .map((s) => {
       const folder = folderOf(s);
       const suffix = folder ? ` · ${folderBasename(folder)}` : "";
+      const pct = typeof s.progress === "number" ? ` ${s.progress}%` : "";
       const label =
         s.status === "blocked" ? waitingLabel(s.blockedKind) : STATUS_LABEL[s.status];
-      return `${s.name} — ${label}${suffix}`;
+      return `${s.name} — ${label}${pct}${suffix}`;
     })
     .join("\n");
 }
 
 /**
- * The workspace folder to attribute a session to. Prefers the hook-reported
- * `cwd` (source of truth, accounts for `cd` inside the agent) and falls back
- * to the launch folder. Returns undefined for re-adopted terminals that have
- * neither (after a host reload, before any hook has arrived).
+ * The workspace folder to attribute a session to. Prefers the agent's reported
+ * `cwd` from shell integration (the source of truth, since it accounts for a
+ * `cd` inside the agent) and falls back to the launch folder. Returns undefined
+ * for re-adopted terminals that have neither (after a host reload, before the
+ * agent has reported anything).
  */
 export function folderOf(state: SessionState): string | undefined {
   return state.cwd ?? state.launchedInFolder;
@@ -1503,19 +498,19 @@ export const SOUND_FILE_DEFAULT = "media/sounds/notif.wav";
 
 /**
  * The notification message + button label for a status change. Returns `null`
- * only for `running` (no toast). `finished` and `waiting` render as info
- * toasts; `failed` renders as an error toast (the caller switches severity).
+ * for any status we do not announce (`idle`, `working`, `unknown`), so a caller
+ * can treat `null` as "nothing happened worth interrupting the user for".
  *
- * Copy: `<glyph> <agent> <verb> · <repo>` — e.g. "✓ Claude finished · my-app".
- * The status glyph leads (VS Code toasts can't carry a per-agent icon; only the
- * fixed severity icon), and the repo name disambiguates the same agent running
- * across several repos now that hooks are global. `repo` is omitted when empty.
- * For `failed`, the exit code (when known from the exit-status poller) is
- * appended: "✗ Claude crashed · my-app · exit 130".
+ * Copy: `<glyph> <agent> <verb> · <what it said> · <repo>`, e.g.
+ * "✓ Claude done · Upgraded 12 packages · my-app". The status glyph leads (VS
+ * Code toasts cannot carry a per-agent icon, only the fixed severity icon), the
+ * protocol's `msg` follows when the agent supplied one, and the repo name
+ * disambiguates the same agent running across several repos. For `error`, the
+ * exit code is appended when known: "✗ Claude error · my-app · exit 130".
  */
 export function notificationMessage(
   agentName: string,
-  status: LifecycleStatus | LegacyHookStatus,
+  status: LifecycleStatus,
   repo?: string,
   exitCode?: number,
   reason?: WaitingReason,
@@ -1587,82 +582,6 @@ export function waitingLabel(reason?: WaitingReason): string {
 // HTTP lifecycle server (VS Code-coupled)
 // ---------------------------------------------------------------------------
 
-/**
- * Start a localhost HTTP server that receives hook payloads from agent hooks.
- * Each window's extension host gets its own server on a random port; agent
- * terminals are injected with the URL via `createTerminal({ env })`.
- *
- * The returned `url` resolves only once the socket is actually listening —
- * `server.address()` is `null` synchronously after `listen()`, so reading it
- * inline yields port 0 and a broken `http://127.0.0.1:0` that no hook can
- * reach. Callers must `await` `url` before injecting it into terminals.
- *
- * @param onEvent called for each valid payload received
- * @returns a `dispose()` (synchronous) and a `url` promise that resolves with
- *          the bound `http://127.0.0.1:<port>` once listening.
- */
-export function startLifecycleServer(
-  onEvent: (payload: HookPayload) => void
-): { url: Promise<string>; dispose: () => void } {
-  const server = http.createServer((req, res) => {
-    if (req.method !== "POST") {
-      res.writeHead(405).end();
-      return;
-    }
-    let body = "";
-    req.on("data", (chunk) => {
-      body += chunk;
-      // Guard against unbounded payloads (hooks are tiny).
-      if (body.length > 65536) {
-        res.writeHead(413).end();
-        req.destroy();
-        return;
-      }
-    });
-    req.on("end", () => {
-      try {
-        const payload = JSON.parse(body) as HookPayload;
-        if (payload && typeof payload === "object") {
-          onEvent(payload);
-        }
-      } catch {
-        // Malformed payload — ignore.
-      }
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end("{}");
-    });
-    req.on("error", () => {
-      // Connection errors are non-fatal.
-    });
-  });
-
-  // Listen on a random port on localhost. The port isn't known until the
-  // 'listening' event fires (listen() returns before the socket is bound), so
-  // resolve the URL from inside the callback rather than reading
-  // server.address() synchronously — that would yield port 0.
-  const url = new Promise<string>((resolve, reject) => {
-    server.once("listening", () => {
-      const address = server.address();
-      const port =
-        typeof address === "object" && address ? address.port : 0;
-      resolve(`http://127.0.0.1:${port}`);
-    });
-    server.once("error", reject);
-  });
-  server.listen(0, "127.0.0.1");
-
-  return {
-    url,
-    dispose: () => {
-      try {
-        server.closeAllConnections?.();
-      } catch {
-        // closeAllConnections may not exist on older Node; fall through.
-      }
-      server.close();
-    },
-  };
-}
 
 /** A terminal whose process has exited, reported by {@link pollExitStatuses}. */
 export interface PolledExit {
@@ -1685,43 +604,8 @@ export function terminalCreationName(t: vscode.Terminal): string {
     : t.name;
 }
 
-/**
- * Universal fallback: poll terminal exit statuses for agents that may not have
- * hooks wired (or whose hooks haven't fired yet). Detects process exit only —
- * not "needs input". Called on a ~3s interval from activate().
- *
- * Matching uses the terminal's creation name, so a tab renamed after launch is
- * still recognized as its original agent. The returned map is keyed by the
- * terminal's current display name; LifecycleContext resolves display name →
- * session key before updating state.
- *
- * @returns a map of terminal name → {status, exitCode} for terminals whose
- *          process has exited (exitStatus defined) but aren't already marked.
- */
-export function detectHeuristicStatus(agentName: string, output: string): { status: LifecycleStatus; reason?: WaitingReason } | undefined {
-  const recent = output.slice(-12000);
-  const lower = recent.toLowerCase();
-  const name = agentName.toLowerCase();
-  if (name.includes("claude") || name.includes("droid")) {
-    if (/^\s*do you want to proceed\?\s*$/m.test(lower) || /waiting for permission|needs your permission/.test(lower)) return { status: "blocked", reason: "permission" };
-    if (/esc to interrupt/.test(lower) || /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(recent.slice(-512))) return { status: "working" };
-    if (/^\s*❯\s*$/m.test(recent.slice(-1500))) return { status: "idle" };
-  }
-  if (name === "codex") {
-    if (/allow command\?|press enter to confirm|trust this folder\?|action required/.test(lower)) return { status: "blocked", reason: "permission" };
-    if (/(?:^| )[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏](?: |$)/.test(recent.slice(-1000)) || /\([0-9]+s(?: • .* to interrupt)?\)/.test(lower.slice(-2000))) return { status: "working" };
-    if (/^›\s*$/m.test(recent.slice(-1000))) return { status: "idle" };
-  }
-  if (name === "opencode") {
-    if (/△ permission required|esc dismiss.*enter confirm/.test(lower)) return { status: "blocked", reason: "permission" };
-    if (/esc to interrupt|ctrl\+c to interrupt|press esc to interrupt/.test(lower) || /(?:■|⬝){4,}/.test(lower)) return { status: "working" };
-  }
-  return undefined;
-}
-
 export function pollExitStatuses(
   terminals: readonly vscode.Terminal[],
-  sessions: Map<string, SessionState>,
   agentNames: Set<string>
 ): Map<string, PolledExit> {
   const result = new Map<string, PolledExit>();
@@ -1731,11 +615,8 @@ export function pollExitStatuses(
     if (!agentNames.has(base.toLowerCase())) continue;
     const exit = t.exitStatus;
     if (!exit || exit.code === undefined) continue; // still running
-    const prev = sessions.get(t.name) ?? sessions.get(creationName);
-    // Skip sessions already in a final state (finished/failed). Everything
-    // else — including `unknown` (re-adopted after a host reload) — is polled
-    // so its real status is discovered once the process has exited.
-    if (prev && (prev.status === "done" || prev.status === "error")) continue;
+    // Already-final sessions are filtered by the tracker's `execEnd`, which
+    // keeps a protocol-reported done/error over a later exit.
     result.set(t.name, {
       status: exit.code === 0 ? "done" : "error",
       exitCode: exit.code,

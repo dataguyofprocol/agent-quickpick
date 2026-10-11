@@ -2,17 +2,17 @@
  * Bench scenarios for the data-plane hot paths — everything that runs in plain
  * Node without a VS Code host (the same import surface as the unit tier).
  * Scenario list is deliberately short: only paths with a plausible reason to
- * get slower (called per keystroke, per hook event, per poll tick, or over
- * user-controlled file sizes). Adding one means having a refactor in mind
- * whose impact it would measure — this is an A/B tool, not a scoreboard.
+ * get slower (called per output chunk, per poll tick, per keystroke, or over
+ * user-controlled file sizes). Adding one means having a refactor in mind whose
+ * impact it would measure — this is an A/B tool, not a scoreboard.
  *
- * Fixtures approximate real shapes: a Claude-style ~/.claude/settings.json at
- * the size seen in the wild (~8 KB) and a stressed variant (~500 KB), a
+ * Fixtures approximate real shapes: a typical burst of agent terminal output
+ * (spinner repaints plus protocol reports), a Claude-style ~/.claude/settings.json
+ * at the size seen in the wild (~8 KB) and a stressed variant (~500 KB), a
  * frecency map far larger than any real user's, and terminal counts past the
  * "how many agents would you seriously run" horizon.
  */
 
-import * as http from "http";
 import * as vscode from "vscode";
 
 import {
@@ -29,11 +29,17 @@ import {
   statusBarText,
   statusBarTooltip,
   pollExitStatuses,
-  readConfigJson,
-  writeConfigJson,
-  startLifecycleServer,
 } from "../../lifecycle";
-import { CLAUDE_ADAPTER } from "../../lifecycle-adapters";
+import { ProgramStatusParser } from "../../program-status";
+import { TerminalSignals } from "../../terminal-signals";
+import { SessionTracker } from "../../session-tracker";
+import {
+  cleanupLegacyHooks,
+  readConfigJson,
+  stripCommandHooks,
+  writeConfigJson,
+  type LegacyIo,
+} from "../../legacy-hooks";
 import type { BenchFn } from "./harness";
 
 export interface Scenario {
@@ -42,282 +48,272 @@ export interface Scenario {
   warmup?: number;
   /** Build fixtures; returns the per-iteration function under test. */
   setup(): BenchFn;
-  /** Release scenario-owned resources (the HTTP server). */
+  /** Release scenario-owned resources, when it has any. */
   teardown?(): void;
 }
 
-// ---------------------------------------------------------------------------
-// Fixture builders
-// ---------------------------------------------------------------------------
-
-const HOOK_URL = "http://127.0.0.1:63742";
-const PORT_FILE =
-  "/Users/someone/Library/Application Support/Trae/User/globalStorage/agent-quickpick/hook-server.json";
-const SESSION = "Claude";
 const NOW = 1_700_000_000_000;
+const MARKER = "agentQuickpick:claude";
 
 /** A plausible *user-owned* hook command (~1.3 KB, like real ones). */
 function userHookCommand(i: number): string {
-  return (
-    `node /Users/someone/.local/share/some-notifier/dist/cli.js ` +
-    `--event "$HOOK_EVENT" --session "$SESSION_ID" --config /Users/someone/.config/some-notifier/config.toml ` +
-    `--token tok-${i} ` +
-    "x".repeat(1100)
-  );
+  return `node -e "/* user hook ${i} */ const x = ${JSON.stringify("y".repeat(1200))};"`;
+}
+
+/** A Claude-style ~/settings.json with `extra` bytes of unrelated user hooks. */
+function claudeSettings(extra: number): Record<string, unknown> {
+  const hooks: Record<string, unknown[]> = {};
+  const perEvent = Math.max(1, Math.ceil(extra / 6 / 1300));
+  for (const event of ["Stop", "Notification", "UserPromptSubmit", "PreToolUse", "PostToolUse"]) {
+    hooks[event] = Array.from({ length: perEvent }, (_, i) => ({
+      matcher: "*",
+      hooks: [{ type: "command", command: userHookCommand(i) }],
+    }));
+  }
+  return { model: "sonnet", hooks };
 }
 
 /**
- * A Claude-style settings.json: a handful of top-level keys plus N user hooks
- * spread over events, optionally with our hooks already merged in (what
- * autoUpgradeHooks inspects on every activation).
+ * One realistic burst of agent output: a TUI repaint (cursor moves + erase-line
+ * + braille spinner), a window-title update, an `OSC 9;4` progress report, and
+ * an `OSC 7501` status report. This is the per-chunk path.
  */
-function claudeStyleConfigText(userHooks: number, oursInstalled: boolean): string {
-  const events = ["Stop", "Notification", "PreToolUse", "PostToolUse", "SessionStart"];
-  const hooks: Record<string, unknown[]> = {};
-  for (let i = 0; i < userHooks; i++) {
-    const event = events[i % events.length];
-    (hooks[event] ??= []).push({
-      matcher: i % 3 === 0 ? "Bash|Edit" : undefined,
-      hooks: [{ type: "command", command: userHookCommand(i) }],
-    });
-  }
-  let config: unknown = {
-    model: "claude-sonnet-4-5",
-    permissions: { allow: ["Bash(npm run *)", "Read(~/**)"], deny: ["Bash(curl *)"] },
-    env: { FORCE_COLOR: "1", NO_UPDATE_NOTIFIER: "1" },
-    statusLine: { type: "command", command: userHookCommand(999) },
-    hooks,
-  };
-  if (oursInstalled) {
-    config = CLAUDE_ADAPTER.mergeHooks(config, HOOK_URL, SESSION, PORT_FILE);
-  }
-  return writeConfigJson(config);
+function agentBurst(status: "working" | "blocked" | "done"): string {
+  const msg = Buffer.from(`Refactoring ${"x".repeat(40)}`).toString("base64");
+  return [
+    "\u001b[2K\u001b[1A\u001b[2K",
+    "⠹ Running…\r⠸ Running…\r⠼ Running…\r",
+    "\u001b]2;⠹ claude — refactoring\u0007",
+    "\u001b]9;4;3;\u0007",
+    `\u001b]7501;state=${status}:kind=permission:app=claude-code:msg=${msg}\u001b\\`,
+    "\u001b[38;5;246m❯\u001b[0m ",
+  ].join("");
 }
 
-/** Map-backed vscode.Memento stand-in (same shape as the unit-tier fake). */
-function fakeMemento(initial: Record<string, unknown>): MementoLike {
-  const store = new Map<string, unknown>(Object.entries(initial));
-  return {
-    get<T>(key: string): T | undefined {
-      return store.get(key) as T | undefined;
-    },
-    update(key: string, value: unknown): void {
-      store.set(key, value);
-    },
-  };
-}
-
-/** A frecency map with `n` entries, all last-used within the prune horizon. */
-function seededFrecency(n: number): FrecencyMap {
-  const map: FrecencyMap = {};
-  for (let i = 0; i < n; i++) {
-    map[`agent-${i}`] = { c: 1 + (i % 40), t: NOW - (i % 90) * 86_400_000 };
-  }
-  return map;
-}
-
-/** Structural fake of vscode.Terminal — only name/creationOptions/exitStatus are read. */
-function terminal(name: string, exitCode?: number): vscode.Terminal {
-  return {
-    name,
-    creationOptions: { name },
-    ...(exitCode !== undefined ? { exitStatus: { code: exitCode } } : {}),
-  } as vscode.Terminal;
-}
-
-/** n terminals: mostly agent-named (mixed exited/running) plus plain shells. */
-function fakeTerminals(n: number, agentNames: Set<string>): vscode.Terminal[] {
-  const agents = [...agentNames];
-  const terminals: vscode.Terminal[] = [];
-  for (let i = 0; i < n; i++) {
-    if (i % 5 === 4) {
-      terminals.push(terminal(`zsh${i > 0 ? ` (${i})` : ""}`)); // not ours
-      continue;
-    }
-    const base = agents[i % agents.length];
-    const display = i >= agents.length ? `${base} (${Math.floor(i / agents.length) + 1})` : base;
-    terminals.push(terminal(display, i % 3 === 0 ? undefined : i % 7));
-  }
-  return terminals;
-}
+/** A 24-line snapshot of a permission prompt, as a TUI leaves it on screen. */
+const PERMISSION_TAIL = [
+  "╭──────────────────────────────────────────────╮",
+  "│ Bash command                                 │",
+  "│   rm -rf build                               │",
+  "│                                              │",
+  "│ Do you want to proceed?                      │",
+  "│ ❯ 1. Yes                                     │",
+  "│   2. Yes, and don't ask again for: rm*        │",
+  "│   3. No                                      │",
+  "╰──────────────────────────────────────────────╯",
+  "  esc to cancel · tab to amend",
+].join("\n");
 
 // ---------------------------------------------------------------------------
 // Scenarios
 // ---------------------------------------------------------------------------
 
-const AGENT_NAMES = new Set(["claude", "codex", "opencode", "pi", "oh-my-pi", "droid", "antigravity"]);
-
-/** The install/upgrade pipeline exactly as installHook runs it: parse → merge → serialize. */
-function hookInstallPipeline(sizeLabel: string, userHooks: number, iterations: number): Scenario {
-  return {
-    name: `hooks: install pipeline (${sizeLabel})`,
-    iterations,
-    setup: () => {
-      const text = claudeStyleConfigText(userHooks, false);
-      return () => {
-        writeConfigJson(CLAUDE_ADAPTER.mergeHooks(readConfigJson(text), HOOK_URL, SESSION, PORT_FILE));
-      };
-    },
-  };
-}
-
-/** A live-server POST round-trip per iteration; the server disposes in teardown. */
-function serverRoundTrip(iterations: number): Scenario {
-  let server: { dispose(): void } | undefined;
-  return {
-    name: "server: hook POST round-trip",
-    iterations,
-    setup: () => {
-      const s = startLifecycleServer(() => {});
-      server = s;
-      const body = Buffer.from(
-        JSON.stringify({
-          marker: "agentQuickpick:claude",
-          session: "Claude (2)",
-          status: "done",
-          agentName: "Claude",
-          cwd: "/Users/someone/src/my-app",
-          message: "",
-        })
-      );
-      let url: string | undefined;
-      return async () => {
-        // Resolves on the probe (pre-warmup) call only; the timed loop then
-        // measures a pure request/response round-trip against the live port.
-        url ??= await s.url;
-        await new Promise<void>((resolve, reject) => {
-          const req = http.request(
-            url as string,
-            {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                "Content-Length": body.length,
-              },
-            },
-            (res) => {
-              res.resume();
-              res.on("end", () => resolve());
-            }
-          );
-          req.on("error", reject);
-          req.end(body);
-        });
-      };
-    },
-    teardown: () => server?.dispose(),
-  };
-}
-
 export const SCENARIOS: Scenario[] = [
-  // --- Hook config file paths (driven by user-controlled file sizes) ---
-  hookInstallPipeline("~8 KB", 4, 2000),
-  hookInstallPipeline("~500 KB", 330, 100),
   {
-    // The full JSON.stringify().includes(marker) containment check — quantifies
-    // whether a targeted walk would pay for itself before anyone writes one.
-    name: "hooks: hasCommandHooks (~500 KB)",
-    iterations: 200,
+    name: "osc7501: parse + snapshot (realistic burst)",
+    iterations: 4000,
     setup: () => {
-      const parsed = readConfigJson(claudeStyleConfigText(330, true));
-      return () => CLAUDE_ADAPTER.hasOurHooks(parsed);
-    },
-  },
-  {
-    name: "hooks: hasCurrentCommandHooks (~500 KB)",
-    iterations: 2000,
-    setup: () => {
-      const parsed = readConfigJson(claudeStyleConfigText(330, true));
-      return () => CLAUDE_ADAPTER.hasCurrentHooks(parsed);
-    },
-  },
-  {
-    name: "hooks: stripCommandHooks (~500 KB, ours installed)",
-    iterations: 200,
-    setup: () => {
-      const parsed = readConfigJson(claudeStyleConfigText(330, true));
-      return () => CLAUDE_ADAPTER.stripHooks(parsed);
-    },
-  },
-
-  // --- Frecency (per quick-pick open + per launch) ---
-  ...[100, 1000, 10000].map((n): Scenario => ({
-    name: `frecency: sortByFrecency (${n} entries)`,
-    iterations: n <= 1000 ? 2000 : 1000,
-    setup: () => {
-      const map = seededFrecency(n);
-      const names = Object.keys(map);
-      const scoreOf = (name: string) => {
-        const e = map[name];
-        return e ? frecencyScore(e.c, e.t, NOW) : 0;
+      const burst = agentBurst("working");
+      const parser = new ProgramStatusParser();
+      return () => {
+        parser.push(burst);
       };
-      return () => sortByFrecency(names, scoreOf);
-    },
-  })),
-  {
-    // The per-launch write: read + prune-over-all-keys + update.
-    name: "frecency: recordLaunch (10k-entry map)",
-    iterations: 2000,
-    setup: () => {
-      const state = fakeMemento({ "frecency.v1": seededFrecency(10000) });
-      return () => recordLaunch(state, "agent-0", NOW);
     },
   },
-
-  // --- Exit-status poller (runs every 3s while terminals are open) ---
-  ...[10, 100, 500].map((n): Scenario => ({
-    name: `poller: pollExitStatuses (${n} terminals)`,
-    iterations: n <= 100 ? 5000 : 1000,
-    setup: () => {
-      const terminals = fakeTerminals(n, AGENT_NAMES);
-      const sessions = new Map<string, SessionState>();
-      for (let i = 0; i < terminals.length; i += 3) {
-        sessions.set(terminals[i].name, {
-          name: terminals[i].name,
-          agentName: "Claude",
-          status: "working",
-          changedAt: NOW,
-        });
-      }
-      return () => pollExitStatuses(terminals, sessions, AGENT_NAMES);
-    },
-  })),
-
-  // --- Hook server round-trip (what every hook event costs on our side) ---
-  serverRoundTrip(500),
-
-  // --- Quick-pick list assembly ---
   {
-    name: "agents: loadAgents (20 built-ins + 200 user)",
+    name: "signals: title + progress + text tail (realistic burst)",
+    iterations: 4000,
+    setup: () => {
+      const burst = agentBurst("working");
+      const signals = new TerminalSignals();
+      return () => {
+        signals.push(burst);
+        signals.text();
+      };
+    },
+  },
+  {
+    name: "status: classify from a permission prompt (24-line tail)",
+    iterations: 4000,
+    setup: () => {
+      const tracker = new SessionTracker();
+      tracker.track("Claude", "Claude");
+      // Past the startup grace, with output already seen.
+      tracker.output("Claude", "start", NOW);
+      let clock = NOW + 5_000;
+      const chunk = `${PERMISSION_TAIL}\u001b]2;Claude\u0007`;
+      return () => {
+        clock += 1_000;
+        tracker.output("Claude", chunk, clock);
+        tracker.tick(clock);
+      };
+    },
+  },
+  {
+    name: "status: classify with no rule match (activity/idle decay)",
+    iterations: 4000,
+    setup: () => {
+      const tracker = new SessionTracker();
+      tracker.track("Claude", "Claude");
+      tracker.output("Claude", "hello", NOW);
+      let clock = NOW + 5_000;
+      return () => {
+        clock += 1_000;
+        tracker.output("Claude", "plain line\n", clock);
+        tracker.tick(clock);
+      };
+    },
+  },
+  {
+    name: "legacy: strip our hooks (~500 KB config)",
+    iterations: 200,
+    setup: () => {
+      const config = claudeSettings(500 * 1024);
+      // A realistic ours-installed shape: one entry holding ours plus a user's.
+      const hooks = config.hooks as Record<string, unknown[]>;
+      hooks.Stop = [
+        ...(hooks.Stop ?? []),
+        {
+          matcher: "*",
+          hooks: [
+            { type: "command", command: userHookCommand(999) },
+            { type: "command", command: `node -e "/*${MARKER}:v4*/post()"` },
+          ],
+        },
+      ];
+      return () => {
+        stripCommandHooks(config, MARKER);
+      };
+    },
+  },
+  {
+    name: "legacy: cleanup pass over every target (in-memory IO)",
+    iterations: 100,
+    setup: () => {
+      const parsed = stripCommandHooks(claudeSettings(8 * 1024), MARKER);
+      const installed = JSON.stringify({
+        hooks: { Stop: [{ hooks: [{ type: "command", command: `node -e "/*${MARKER}*/"` }] }] },
+      });
+      const files = new Map<string, string>([
+        ["/home/me/.claude/settings.json", installed],
+        ["/home/me/.factory/settings.json", installed],
+        ["/home/me/.codex/hooks.json", installed],
+        ["/home/me/.gemini/config/hooks.json", JSON.stringify({ "agent-quickpick": { Stop: [{ command: `x ${MARKER}` }] } })],
+        ["/home/me/.config/opencode/plugin/agent-quickpick-lifecycle.js", `/* ${MARKER} */`],
+        ["/home/me/.pi/agent/extensions/agent-quickpick-lifecycle.js", `/* ${MARKER} */`],
+      ]);
+      const io: LegacyIo = {
+        read: async (file) => {
+          const text = files.get(file);
+          if (text === undefined) return undefined;
+          return text;
+        },
+        write: async (file, text) => {
+          files.set(file, text);
+        },
+        remove: async (file) => {
+          files.delete(file);
+        },
+      };
+      return async () => {
+        files.set("/home/me/.claude/settings.json", installed);
+        await cleanupLegacyHooks(io, { PI_CODING_AGENT_DIR: "/home/me/.pi/agent" }, "linux", "/home/me");
+      };
+    },
+  },
+  {
+    name: "legacy: read + write config JSON (~500 KB)",
+    iterations: 200,
+    setup: () => {
+      const text = writeConfigJson(claudeSettings(500 * 1024));
+      return () => {
+        writeConfigJson(readConfigJson(text));
+      };
+    },
+  },
+  {
+    name: "poll: exit statuses (500 terminals)",
+    iterations: 2000,
+    setup: () => {
+      const agentNames = new Set(["claude", "codex", "opencode", "pi"]);
+      const terminals = Array.from({ length: 500 }, (_, i) => ({
+        name: `Claude (${i})`,
+        ...(i % 3 === 0 ? { exitStatus: { code: i % 6 === 0 ? 0 : 1 } } : {}),
+      })) as unknown as vscode.Terminal[];
+      return () => {
+        pollExitStatuses(terminals, agentNames);
+      };
+    },
+  },
+  {
+    name: "frecency: recordLaunch (10k-entry map)",
     iterations: 5000,
     setup: () => {
-      const userAgents = Array.from({ length: 200 }, (_, i) => ({
-        name: `Custom ${i}`,
-        cmd: `agent-${i}`,
-        icon: "rocket",
-        color: "terminal.ansiBlue",
-      }));
-      return () => loadAgents(userAgents);
+      const state: FrecencyMap = {};
+      for (let i = 0; i < 10_000; i++) {
+        state[`agent ${i}`] = { c: i % 50, t: NOW - i * 60_000 };
+      }
+      const memento: MementoLike = {
+        get: <T>() => state as unknown as T,
+        update: () => {},
+      };
+      let i = 0;
+      return () => {
+        recordLaunch(memento, `Agent ${i++ % 10_000}`, NOW);
+      };
     },
   },
-
-  // --- Status-bar re-render (fires on every hook event / poll hit) ---
+  {
+    name: "frecency: sort 320 agents",
+    iterations: 5000,
+    setup: () => {
+      const agents = Array.from({ length: 320 }, (_, i) => ({
+        name: `Agent ${i}`,
+        cmd: `agent-${i}`,
+        icon: "claude.svg",
+        color: "terminal.ansiGreen",
+      }));
+      const state: FrecencyMap = {};
+      for (let i = 0; i < agents.length; i++) {
+        state[agents[i].name.toLowerCase()] = { c: i % 40, t: NOW - i * 3600_000 };
+      }
+      return () => {
+        sortByFrecency(agents, (a) => {
+          const entry = state[a.name.toLowerCase()];
+          return entry ? frecencyScore(entry.c, entry.t, NOW) : 0;
+        });
+      };
+    },
+  },
+  {
+    name: "agents: loadAgents (20 built-ins + 200 user)",
+    iterations: 2000,
+    setup: () => {
+      const user = Array.from({ length: 200 }, (_, i) => ({
+        name: `Custom ${i}`,
+        cmd: `custom-${i}`,
+      }));
+      return () => {
+        loadAgents(user);
+      };
+    },
+  },
   {
     name: "render: statusBar text+tooltip (500 sessions)",
     iterations: 2000,
     setup: () => {
-      const statuses = ["working", "done", "blocked", "error", "unknown"] as const;
+      const statuses = ["working", "done", "blocked", "error", "idle", "unknown"] as const;
       const states: SessionState[] = Array.from({ length: 500 }, (_, i) => ({
         name: `Claude (${i})`,
         agentName: "Claude",
         status: statuses[i % statuses.length],
-        changedAt: NOW - i,
-        cwd: i % 2 ? "/Users/someone/src/my-app" : undefined,
-        launchedInFolder: i % 2 ? undefined : "/Users/someone/src/other",
+        changedAt: NOW - i * 1000,
+        cwd: `/repo/${i}`,
+        source: "osc",
       }));
       return () => {
-        statusBarText(countByStatus(states));
         statusBarTooltip(states);
+        statusBarText(countByStatus(states));
       };
     },
   },

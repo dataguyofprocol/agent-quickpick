@@ -1,11 +1,10 @@
 /**
- * JSON config helpers shared by all adapters that write JSON config files.
- * Unit tier — no VS Code host needed.
+ * JSON config helpers used by legacy-hook cleanup. Unit tier — no VS Code host.
  */
 
 import * as assert from "assert";
 
-import { readConfigJson, writeConfigJson } from "../../lifecycle";
+import { readConfigJson, writeConfigJson } from "../../legacy-hooks";
 
 suite("readConfigJson", () => {
   test("parses a valid object", () => {

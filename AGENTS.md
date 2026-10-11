@@ -4,7 +4,9 @@ Compact guide for OpenCode sessions working in this repo. Read this before editi
 
 ## What this is
 
-A VS Code extension (`engines.vscode: ^1.85.0`, `@types/vscode` pinned to 1.85). TypeScript → CommonJS → `out/`. Entry point `out/extension.js` (from `src/extension.ts`). Not a Node app or library; it runs inside VS Code's extension host.
+A VS Code extension (`engines.vscode: ^1.93.0`, `@types/vscode` pinned to 1.85). TypeScript → CommonJS → `out/`. Entry point `out/extension.js` (from `src/extension.ts`). Not a Node app or library; it runs inside VS Code's extension host.
+
+The 1.93 floor exists because status detection reads each agent's terminal output through shell integration (`onDidStartTerminalShellExecution` + `execution.read()`); that API landed in 1.93. Don't lower it without a replacement path.
 
 ## On every change
 
@@ -28,8 +30,10 @@ npm run build:iconfont # ONLY when icons/statusbar-glyph.svg changes (rebuilds t
 
 ### Two test tiers
 
-- **Unit tier** (`src/test/unit/*.test.ts`, run by `npm run test:unit`): plain mocha over `out/test/unit/` — no VS Code window, seconds. Anything that imports only `agents.ts` / `lifecycle.ts` / `lifecycle-adapters.ts` belongs here (those modules must stay free of *runtime* `vscode` usage; type-only imports are fine — tsc elides them). This tier also executes the generated hook command and the OpenCode plugin / pi extension for real against a localhost server, and includes the seeded fuzz + repo-consistency suites.
+- **Unit tier** (`src/test/unit/*.test.ts`, run by `npm run test:unit`): plain mocha over `out/test/unit/` — no VS Code window, seconds. Anything that imports only `agents.ts`, the status modules (`program-status.ts` / `terminal-signals.ts` / `detect.ts` / `detect-manifests.ts` / `session-tracker.ts`), `lifecycle.ts` or `legacy-hooks.ts` belongs here (those modules must stay free of *runtime* `vscode` usage; type-only imports are fine — tsc elides them). The status machine is driven with synthetic output and a fake clock, so protocol/regex/lifetime behavior is all testable here; the tier also includes the seeded fuzz and repo-consistency suites.
 - **Host tier** (`src/test/suite/*.test.ts`, run inside `@vscode/test-electron`): only what genuinely needs the VS Code API — `resolveIconPath`/`resolveColor` (construct runtime vscode objects), `LifecycleContext`, activation. Uses **mocha TDD UI**, 60s timeout. It launches a real editor window (a local fork binary if found, else downloaded stable VS Code — on macOS you'll see it flash; Linux CI wraps it in `xvfb-run`).
+
+  **If you run the host tier from inside an Electron-based editor's terminal** (this repo's own dev loop), unset `ELECTRON_RUN_AS_NODE` or the launched editor will run as plain Node and die with `bad option: --no-sandbox`: `env -u ELECTRON_RUN_AS_NODE npm test`. `AQP_TEST_VSCODE=/path/to/Electron` pins the editor binary to test against.
 
 Single-file runs: `npx mocha --ui tdd --exit out/test/unit/<file>.test.js` (compile first). The host tier has no per-file filter — but its rejection message always names failing tests, because some forks (Trae) drop all extension-host console output.
 
@@ -40,9 +44,14 @@ No linter or formatter is configured. Don't invent one. `tsc --strict` is the on
 ## Source map
 
 - `src/extension.ts` — `activate`, icon/color resolution (`resolveIconPath`/`resolveColor`), launch, the `LifecycleContext` class (exported for host-tier tests), URI handler, commands.
-- `src/agents.ts` — the vscode-free half: `BUILTIN_AGENTS`, `loadAgents`, frecency, install detection (`isCmdInstalled` + cache), `launchText`/`launchDelay`, terminal naming/session matching. Must stay free of *runtime* `vscode` usage so the unit tier can import it.
-- `src/lifecycle.ts` — pure helpers (config read/write, hook merge/strip, status-bar text, notification logic, notify/sound command builders) **plus** the VS Code-coupled localhost HTTP server and exit-status poller. Keep the pure helpers free of runtime `vscode` usage — they're unit-tested without a host.
-- `src/lifecycle-adapters.ts` — one `LifecycleAdapter` per lifecycle-aware agent, a `kind` union: `"command-hooks"` (Claude → `~/.claude/settings.json`, Droid → `~/.factory/settings.json`, Codex → `~/.codex/hooks.json`; Claude/Droid/Codex share the nested JSON schema, Antigravity → `~/.gemini/config/hooks.json` uses a *named-registry* schema — one `"agent-quickpick"` entry, matcher-wrapped tool events vs flat lifecycle handlers, `enabled:false` preserved across merges) and `"plugin-file"` (OpenCode → a self-contained ESM plugin dropped in `~/.config/opencode/plugin/`; pi → an ESM extension dropped in `~/.pi/agent/extensions/`, `.js` because pi's auto-loader only accepts `.ts`/`.js` — both auto-loaded, no JSON edit). Command-hook paths are **home-relative**; **plugin-file adapters own their base dir** via `resolveBaseDir(env, platform, homedir)` (pure, env-snapshot-fed, throws if the result isn't absolute for the platform), because each agent has its own env override — `OPENCODE_CONFIG_DIR`/XDG for OpenCode, `PI_CODING_AGENT_DIR` for pi. Both plugin-file paths are guarded by `shouldWritePluginFile` / `shouldRemovePluginFile` (`lifecycle.ts`): a file at the target path without the adapter's marker is never written and never deleted.
+- `src/agents.ts` — the vscode-free half: `BUILTIN_AGENTS`, `loadAgents`, frecency, install detection (`isCmdInstalled` + cache), `launchText`/`launchDelay`, `programStatusEnv` (the OSC 7501 opt-in some agents need), terminal naming/session matching. Must stay free of *runtime* `vscode` usage so the unit tier can import it.
+- `src/program-status.ts` — the OSC 7501 Program Status Protocol: report parsing, record lifetime, and the attention/root record-selection policy. Pure.
+- `src/terminal-signals.ts` — raw terminal output → usable signals: OSC 0/2 window title, OSC 9 progress, and a `\r`/`ESC[K`-aware line-oriented text tail (the closest thing to a screen we can get without a screen buffer). Pure.
+- `src/detect.ts` + `src/detect-manifests.ts` — the fallback rule engine and its per-agent rule tables, derived from [Herdr](https://github.com/herdrdev/herdr)'s detection manifests (Apache-2.0; see `THIRD_PARTY_NOTICES.md`). Rules match `osc_title` / `osc_progress` / the text tail; screen-geometry rules are deliberately not ported. Pure.
+- `src/session-tracker.ts` — the per-terminal state machine: source precedence (protocol → heuristics → exit code), the fallback ladder, `done`/`error` latching, notification policy and rate limiting. Pure, and where most status bugs will live.
+- `src/agent-reporters.ts` + `reporters/` — launch-time OSC 7501 reporters for Claude Code (`claude-settings.json`) and OpenCode V2 (`opencode/tui.js`). vscode-free; unit-tested, including a fake-API run of the OpenCode plugin.
+- `src/legacy-hooks.ts` — **removal only** of hooks/plugins older versions installed (marker-scoped strip + the paths and markers to find them). Nothing here writes NEW agent configuration.
+- `src/lifecycle.ts` — presentation and VS Code-coupled bits: status-bar text/tooltip, session filtering, notification copy, notify/sound command builders, and the exit-status poller. Keep the pure helpers free of runtime `vscode` usage — they're unit-tested without a host.
 - `src/test/unit/*.test.ts` — unit tier (see above). `src/test/suite/*.test.ts` — host tier.
 - `icons/*.svg` — one per agent. House style: 24×24 viewBox, `rx=6` rounded bg, white glyph on brand fill.
 - `package.json` — `contributes.configuration` (settings schema), `contributes.colors` (closed set of custom theme colors), `contributes.icons` (status-bar glyph), commands, keybinding.
@@ -55,19 +64,32 @@ No linter or formatter is configured. Don't invent one. `tsc --strict` is the on
 
 ## Generated / gitignored — do not edit, do not commit
 
-Lifecycle hooks now install **globally** (into `~/.claude`, `~/.factory`, `~/.config/opencode`, `~/.pi/agent`), not into the repo — so exercising them no longer litters the working tree. The following are still generated / gitignored:
+Nothing writes into the repo at runtime, and status detection installs nothing at all. The following are generated / gitignored:
 
 - `.zcode/`, `.vscode-test/`, `out/`, `*.vsix` — build/test artifacts. Gitignored.
 - `.env` — contains publish tokens (e.g. `OVSX_PAT`). Never commit.
 
 If a session "fixes" or edits these, it's editing generated output. Source of truth is `src/`.
 
-## Lifecycle hooks (when touching lifecycle code)
+## Status detection (when touching lifecycle code)
 
-- Install is **global, once per agent** (prompt flag `hooks.<marker>.global`), into home-relative paths — never per-workspace. This works because the hook payload is driven by the `AQP_HOOK_URL` + `AQP_SESSION` env injected per-terminal via `createTerminal({ env })`; a global hook routes to whichever window launched the terminal and **no-ops when `AQP_SESSION` is absent** (a session we didn't launch). Preserve that guard — without it the global hook runs on every Stop/Notification system-wide.
-- Command-hook install/remove must stay **symmetric and idempotent**, identified by the marker `agentQuickpick:<agent>`. Stripping ours must never remove a user's own hooks. Plugin-file install/remove is just write/delete of the plugin file.
-- `migrateWorkspaceHooks()` (called on activate, once per workspace) strips the older workspace-local hooks a pre-global build left behind (`.claude/settings.local.json`, `.factory/settings.json`, `opencode.json` + `.opencode/*.mjs`).
-- A 3-second exit-status poll is the universal fallback for agents whose hooks never fire.
+Four tiers, in priority order, and the order is the whole design:
+
+1. **`OSC 7501`** (the Program Status Protocol, `src/program-status.ts`). An agent that reports its own state is believed, full stop. The parser follows the spec's error handling exactly: a malformed *optional* key (`kind`, `progress`, `app`) is treated as **absent**, while a malformed `state`/`id` or an undecodable or control-character-bearing `msg`/`title` **discards the report**. Don't "simplify" either direction.
+2. **Heuristics** (`src/detect.ts` + `src/detect-manifests.ts`) for agents that don't speak it: window title, `OSC 9;4` progress, text tail. Ported from Herdr, but only the regions we can actually compute — **never** approximate a screen-geometry region, and never add a rule whose needles a transcript or diff could satisfy. A spurious "needs your attention" is worse than a missing one.
+3. **The exit code**, the only non-protocol source allowed to claim `done`/`error`.
+4. Everything else settles: output → `working`, quiet → `idle`, `unknown` until evidence arrives.
+
+**The protocol is mostly gated behind a handshake, and VS Code cannot answer it.** Claude Code, pi and Droid send `OSC 7501 ; ?` and only report if the reply arrives *before* the terminal's own `CSI c` (DA1) reply — VS Code implements neither, and an extension's only write channel (`sendText`) lands after DA1, which the agents ignore by design. So in VS Code the protocol path fires only for agents that emit unconditionally (Codex), ship their own override (pi, via `PI_PROGRAM_STATUS=1` in `programStatusEnv`, `agents.ts`), or get a **launch-time reporter** from us (`src/agent-reporters.ts`): Claude Code is launched with `--settings reporters/claude-settings.json` (hooks that print OSC 7501 to the parent process's tty — Claude runs hooks detached, so `/dev/tty` fails), and OpenCode V2 with `OPENCODE_CLI_CONFIG_CONTENT` naming the `reporters/opencode` TUI plugin. That variable's `plugins` list *replaces* the user's `cli.json` list, so the user's plugins are copied in first, and an unreadable `cli.json` means no reporter rather than dropped plugins. Reporters are shims: delete each one when its agent reports natively in VS Code. **Never treat the heuristic tier as removable legacy on the strength of the protocol's existence** — it is what tracks Claude Code and most others today. Re-check this note before changing `fallbackDetection`'s default or deleting a rule table.
+
+Rules that must not regress:
+
+- **`done`/`error` latch.** Once a session reaches a terminal state it stays there until a new protocol report or a new command. A stale text tail must not drag it back to `working`, and a crash after a `done` report becomes `error`.
+- **Only a `visibleBlocker` heuristic, the protocol, or an exit may notify.** A unit test enforces the flag on every `blocked` rule.
+- **Alert rate limiting** (one per session per 2s) is in `SessionTracker.commit`, per the protocol's recommendation.
+- **Herdr's patterns are Rust regex**, where flags are inline (`(?i)`, `(?m)`). JS has no inline flags, so `detect.ts` translates a leading flag group into `RegExp` flags. A pattern that fails to compile must never match — the old behavior of throwing was silently disabling rules.
+- **`read()` must be called synchronously** inside `onDidStartTerminalShellExecution`, or output written before the first call is lost. Shell integration exists on VS Code 1.93+ only, so every use is guarded and the 3-second exit poll stays as the backstop.
+- **Nothing installs anything.** Reporters are passed per launch (a flag, an env var) and never written to an agent's config. `src/legacy-hooks.ts` is removal-only: marker-scoped strip of what older versions wrote, a one-time automatic cleanup after upgrade, and the `Remove Legacy Lifecycle Hooks` command. A config or plugin file that isn't ours is never modified or deleted.
 
 ## CI / release
 
