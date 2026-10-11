@@ -1,8 +1,4 @@
 #!/usr/bin/env bash
-# Reports release-readiness indicators for the current repository.
-# Informational only: an unchecked item is a discussion prompt, not a
-# hard failure. Run from the repository root.
-# -e is intentionally omitted: check commands are expected to fail.
 set -uo pipefail
 
 exists_any() {

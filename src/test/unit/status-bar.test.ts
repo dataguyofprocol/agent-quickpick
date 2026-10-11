@@ -1,7 +1,3 @@
-/**
- * Status-bar rendering helpers. Unit tier — no VS Code host needed.
- */
-
 import * as assert from "assert";
 
 import {
@@ -14,7 +10,6 @@ import {
 } from "../../lifecycle";
 import { makeState } from "./helpers";
 
-/** Build a complete status-counts record (all keys, zero by default). */
 function counts(
   overrides: Partial<Record<LifecycleStatus, number>> = {}
 ): Record<LifecycleStatus, number> {

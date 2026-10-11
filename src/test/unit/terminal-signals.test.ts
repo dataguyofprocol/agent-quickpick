@@ -1,8 +1,3 @@
-/**
- * Terminal signal capture: OSC 0/2 titles, OSC 9 progress, the line-oriented
- * text tail, and OSC 7501 delegation. Unit tier — no VS Code host needed.
- */
-
 import * as assert from "assert";
 
 import { OSC_PROGRESS_TTL_MS, TerminalSignals, TEXT_TAIL_LINES } from "../../terminal-signals";

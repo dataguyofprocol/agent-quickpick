@@ -1,11 +1,3 @@
-/**
- * Repo consistency invariants — the drift AGENTS.md warns about:
- * contributes.colors is a closed set registered at publish time, every
- * built-in agent needs its icon on disk, and lifecycle adapters must match
- * built-in names for launch wiring. Reads package.json + icons/ from the repo.
- * Unit tier — no VS Code host needed.
- */
-
 import * as assert from "assert";
 import * as fs from "fs";
 import * as path from "path";
@@ -13,7 +5,6 @@ import * as path from "path";
 import { BUILTIN_AGENTS, ALLOWED_COLORS } from "../../agents";
 import { LEGACY_TARGETS, isAbsoluteForPlatform } from "../../legacy-hooks";
 
-// out/test/unit/consistency.test.js → repo root is three levels up.
 const REPO_ROOT = path.resolve(__dirname, "..", "..", "..");
 const pkg = JSON.parse(
   fs.readFileSync(path.join(REPO_ROOT, "package.json"), "utf8")
@@ -93,9 +84,6 @@ suite("consistency: legacy hook targets", () => {
   const HOME = { darwin: "/Users/me", linux: "/home/me", win32: "C:\\Users\\me" } as const;
 
   test("legacy targets are well-formed, including for retired agents", () => {
-    // Deliberately NOT restricted to built-in agents: Antigravity is retired,
-    // but a hook an older version wrote must still be strippable, so its target
-    // stays. What matters is that every target can still be resolved.
     assert.ok(LEGACY_TARGETS.length > 0);
     for (const target of LEGACY_TARGETS) {
       assert.ok(target.agentName.trim() !== "", "a legacy target needs an agent name");
@@ -108,8 +96,6 @@ suite("consistency: legacy hook targets", () => {
   });
 
   test("legacy markers are unique per agent", () => {
-    // One agent may have been installed at several paths over time (OpenCode's
-    // V1 `plugin/` and V2 `plugins/`), but always with its own single marker.
     const byAgent = new Map<string, string>();
     for (const target of LEGACY_TARGETS) {
       const seen = byAgent.get(target.agentName);
@@ -138,8 +124,6 @@ suite("consistency: legacy hook targets", () => {
   });
 
   test("plugin base dirs resolve absolute on every platform with a bare env", () => {
-    // The cleanup sink joins pluginPath onto this; a relative result would look
-    // for our file somewhere relative to the extension host's cwd.
     for (const target of LEGACY_TARGETS) {
       if (target.kind !== "plugin-file") continue;
       for (const platform of ["darwin", "linux", "win32"] as const) {

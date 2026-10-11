@@ -1,8 +1,3 @@
-/**
- * Launch text/delay and terminal naming/session-matching helpers.
- * Unit tier — imports from ../../agents, no VS Code host needed.
- */
-
 import * as assert from "assert";
 
 import {
@@ -95,12 +90,10 @@ suite("uniqueTerminalName", () => {
   });
 
   test("reclaims bare name when it's free again", () => {
-    // "Claude" closed, only "Claude (2)" remains → next reuses bare "Claude".
     assert.strictEqual(uniqueTerminalName("Claude", ["Claude (2)"]), "Claude");
   });
 
   test("reclaims lowest free numbered slot", () => {
-    // "Claude" and "Claude (3)" open, "(2)" was closed → fills the (2) gap.
     assert.strictEqual(
       uniqueTerminalName("Claude", ["Claude", "Claude (3)"]),
       "Claude (2)"

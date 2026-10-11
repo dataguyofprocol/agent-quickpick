@@ -1,10 +1,3 @@
-/**
- * Removal of hooks and plugins older versions installed. The safety contract is
- * the point: only entries carrying our marker are touched, and a plugin file is
- * only unlinked when its own contents prove we wrote it.
- * Unit tier — no VS Code host needed.
- */
-
 import * as assert from "assert";
 
 import {
@@ -30,7 +23,6 @@ const OPENCODE = "agentQuickpick:opencode";
 const ENV = { PI_CODING_AGENT_DIR: "/home/me/.pi/agent" } as NodeJS.ProcessEnv;
 const HOME = "/home/me";
 
-/** An in-memory filesystem, so no test touches the real one. */
 function memIo(initial: Record<string, string> = {}): {
   io: LegacyIo;
   files: Map<string, string>;
@@ -209,9 +201,7 @@ suite("cleanupLegacyHooks", () => {
         "agent-quickpick": { Stop: [ours("agentQuickpick:antigravity")] },
       }),
       [`${HOME}/.config/opencode/plugin/agent-quickpick-lifecycle.js`]: `/* ${OPENCODE} */`,
-      // The OpenCode V2 port lived in `plugins/`, not `plugin/`.
       [`${HOME}/.config/opencode/plugins/agent-quickpick-lifecycle.js`]: `/* ${OPENCODE} */`,
-      // A file at a path we know, but not ours.
       [`${HOME}/.pi/agent/extensions/agent-quickpick-lifecycle.js`]: "// not ours\n",
     });
 
@@ -233,7 +223,6 @@ suite("cleanupLegacyHooks", () => {
     });
     assert.strictEqual((await cleanupLegacyHooks(io, ENV, "linux", HOME)).length, 1);
     assert.deepStrictEqual(await cleanupLegacyHooks(io, ENV, "linux", HOME), []);
-    // The file still exists (stripped, not deleted) for a command-hook target.
     assert.ok(files.has(`${HOME}/.claude/settings.json`));
   });
 
@@ -294,7 +283,6 @@ suite("workspace-local migration", () => {
     assert.strictEqual(hasOldOpencodePlugin({ plugin: ["file:///b.mjs"] }), false);
     const kept = stripOldOpencodePlugin({ plugin: ["file:///b.mjs"] }) as { plugin?: unknown };
     assert.deepStrictEqual(kept.plugin, ["file:///b.mjs"]);
-    // An emptied list is pruned rather than left as [].
     const emptied = stripOldOpencodePlugin({ plugin: ["file:///a/agent-quickpick-lifecycle.mjs"] }) as {
       plugin?: unknown;
     };

@@ -1,10 +1,3 @@
-/**
- * Platform notification/sound command builders + the focus-URI click contract
- * + argv sanitizers. Everything here is argv-based; these tests pin that no
- * user-derived text is ever spliced into a shell/AppleScript/PowerShell
- * command line. Unit tier — no VS Code host needed.
- */
-
 import * as assert from "assert";
 import * as path from "path";
 
@@ -51,8 +44,6 @@ suite("sanitizeArgvText", () => {
   });
 
   test("neutralizes command substitution markers", () => {
-    // Parens are kept (legit in session names like "Codex (2)"), but $ and
-    // backticks are stripped, so no $(...) or `...` substitution can survive.
     assert.strictEqual(sanitizeArgvText("$(id)"), "(id)");
     const out = sanitizeArgvText('"; rm -rf ~ #$(id)`touch /tmp/pwned`');
     assert.ok(!out.includes("$"), "no substitution markers survive");
@@ -86,7 +77,6 @@ suite("isSafeBundleId", () => {
   });
 
   test("rejects over-long ids (more than 128 chars)", () => {
-    // 1 leading char + up to 127 more = 128 max.
     assert.strictEqual(isSafeBundleId("a".repeat(128)), true);
     assert.strictEqual(isSafeBundleId("a".repeat(129)), false);
   });
@@ -102,13 +92,9 @@ suite("notifierCandidates", () => {
 
   test("prefers well-known installs before the bundled fallback; $PATH not probed", () => {
     const c = notifierCandidates(EXT, "darwin");
-    // A user's own copy always wins, so power users keep their newer build...
     assert.strictEqual(c[0], "/opt/homebrew/bin/terminal-notifier");
     assert.strictEqual(c[1], "/usr/local/bin/terminal-notifier");
     assert.strictEqual(c[2], "/opt/local/bin/terminal-notifier");
-    // ...and the bundled universal .app is the notifier of last resort. The
-    // list is closed: no $PATH probing (a GUI-launched editor inherits
-    // launchd's minimal PATH anyway, so such candidates can't exist).
     assert.strictEqual(c.length, 4);
     assert.strictEqual(
       c[c.length - 1],
@@ -133,8 +119,6 @@ suite("sessionFromFocusUri", () => {
   });
 
   test("round-trips a session name with spaces and parens (as focusUri emits)", () => {
-    // focusUri builds the query with URLSearchParams; the click must recover the
-    // exact tab name, e.g. "Codex (2)", so the right terminal is focused.
     const name = "Codex (2)";
     const query = new URLSearchParams({
       [FOCUS_URI_SESSION_PARAM]: name,
@@ -167,8 +151,6 @@ suite("sessionFromFocusUri", () => {
 
 suite("systemNotifyCommand", () => {
   const TITLE = "Agent Quickpick";
-  // Hostile text: a session/repo name can legitimately contain these.
-  // sanitizeArgvText strips shell metacharacters while keeping readable text.
   const BODY = '✓ Claude done · "(id)" whoami  \'x\'';
 
   test("darwin without bundle id still uses the notifier when a focus URI is available", () => {
@@ -182,8 +164,6 @@ suite("systemNotifyCommand", () => {
   });
 
   test("darwin never falls back to osascript (Script Editor banner + Finder click)", () => {
-    // No focus URI and no safe bundle id: skip the OS banner instead of handing
-    // it to osascript, which macOS credits to Script Editor.
     assert.strictEqual(systemNotifyCommand("darwin", TITLE, BODY), null);
     assert.strictEqual(systemNotifyCommand("darwin", TITLE, BODY, { bundleId: "com.microsoft.VSCode" })?.fallback, undefined);
   });
@@ -205,7 +185,6 @@ suite("systemNotifyCommand", () => {
   });
 
   test("darwin uses the resolved notifier path, not the bare name", () => {
-    // A GUI-launched editor has launchd's PATH — Homebrew is not on it.
     const spec = systemNotifyCommand("darwin", TITLE, BODY, {
       bundleId: "com.microsoft.VSCode",
       notifierPath: "/opt/homebrew/bin/terminal-notifier",
@@ -228,9 +207,7 @@ suite("systemNotifyCommand", () => {
     const evil = 'com.x" to do shell script "id';
     assert.strictEqual(isSafeBundleId(evil), false);
     assert.strictEqual(isSafeBundleId("com.microsoft.VSCode-insiders"), true);
-    // Unsafe id, no URI → no banner at all (never spliced, never osascript).
     assert.strictEqual(systemNotifyCommand("darwin", TITLE, BODY, { bundleId: evil }), null);
-    // Unsafe id, but a focus URI lets the click route without any attribution.
     const uri = "deepseek://pub.agent-quickpick/focus?session=Claude";
     const spec = systemNotifyCommand("darwin", TITLE, BODY, { bundleId: evil, openUrl: uri });
     assert.strictEqual(spec!.file, "terminal-notifier");

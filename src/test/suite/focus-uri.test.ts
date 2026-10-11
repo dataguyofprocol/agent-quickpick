@@ -1,9 +1,3 @@
-/**
- * The OS-notification click URI must route back to the window that posted it.
- * `asExternalUri` stamps the editor's own scheme with `windowId`, which only a
- * real host can do — hence the host tier.
- */
-
 import * as assert from "assert";
 import * as vscode from "vscode";
 

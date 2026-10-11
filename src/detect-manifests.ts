@@ -1,41 +1,7 @@
-/**
- * Fallback detection rules, ported from Herdr.
- *
- * Rule patterns and thresholds are derived from Herdr
- * (https://github.com/herdrdev/herdr), Apache-2.0, copyright the Herdr
- * contributors. Modified for Agent Quickpick: the rules are expressed against
- * `osc_title`, `osc_progress`, and a line-oriented text tail instead of Herdr's
- * rendered screen grid, so every region that requires a real screen
- * (`prompt_box_body`, `after_last_horizontal_rule`, `last_non_empty_above_prompt_box`,
- * `bottom_non_empty_lines(N)`, `top_non_empty_lines(N)`, `*_prompt_marker`) has
- * been dropped or, where the needles are strong enough to survive a stream,
- * re-expressed with *more* conditions than Herdr requires. See
- * `THIRD_PARTY_NOTICES.md`.
- *
- * ## Why rules are dropped rather than approximated
- *
- * Herdr matches an idempotent screen: text that was dismissed is gone. We match
- * a monotonic byte stream: dismissed text is still in the history, so any needle
- * that a *past* screen could have left behind becomes a sticky false positive —
- * a spurious "needs your attention" that never clears. The following Herdr rules
- * are therefore deliberately absent, because each can be satisfied by transcript
- * or diff text rather than a live prompt:
- *
- * - claude `legacy_no_prompt_blocker` ("waiting for permission", "tab to amend"),
- *   `generic_permission_prompt` / `live_blocked_form` / `bash_permission_prompt`
- *   as written (we keep a single strict merge of the latter two instead: both the
- *   "do you want to proceed?" needle *and* an option line *and* a footer hint),
- *   `live_prompt_box`, `background_agents_working`,
- *   `background_mcp_task_working`, `transcript_viewer`, `model_picker_menu`
- * - codex `weak_blocker` ("[y/n]", "yes (y)"), `trust_directory`, `startup_update`,
- *   `screen_working_fallback`, `transcript_viewer`
- * - opencode `progress_bar_working` (`(■|⬝){4,}`), `permission_required`'s
- *   second branch
- * - amp `approval_footer` ("invoke tool", "waiting for approval")
- * - gemini `apply_or_allow_change`'s `❯.*(yes|allow)` branch
- *
- * Only a rule flagged `visibleBlocker` is allowed to raise a notification; every
- * other heuristic outcome is confined to the status bar and the session picker.
+/*
+ * Rule patterns and thresholds derived from Herdr (https://github.com/herdrdev/herdr).
+ * Apache-2.0, copyright the Herdr contributors.
+ * Modified for Agent Quickpick to use terminal signals instead of screen geometry.
  */
 
 import type { DetectManifest } from "./detect";
@@ -45,7 +11,6 @@ export const DETECT_MANIFESTS: readonly DetectManifest[] = [
     id: "claude",
     aliases: ["claude-code", "claudeproxy", "claudeglm"],
     rules: [
-      // Herdr osc_title_working: braille covers <= 2.1.227, half-circles 2.1.228+.
       {
         id: "osc_title_working",
         state: "working",
@@ -53,10 +18,6 @@ export const DETECT_MANIFESTS: readonly DetectManifest[] = [
         region: "osc_title",
         regex: ["^[\\u2800-\\u28FF\\u25D0-\\u25D3] "],
       },
-      // Stricter than Herdr: their bash_permission_prompt and
-      // generic_permission_prompt each need one needle plus options; we require
-      // the question, a footer hint, and an option line, because a stream tail
-      // also contains the *answered* copy of a prompt.
       {
         id: "permission_prompt",
         state: "blocked",
@@ -148,8 +109,6 @@ export const DETECT_MANIFESTS: readonly DetectManifest[] = [
         region: "osc_title",
         regex: ["(?:^| )[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏](?: |$)"],
       },
-      // Herdr live_strong_blocker: long literals only, which is what makes it
-      // safe without a screen.
       {
         id: "live_strong_blocker",
         state: "blocked",

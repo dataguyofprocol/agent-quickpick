@@ -1,8 +1,3 @@
-/**
- * Frecency scoring, sorting, and persistence via a fake memento.
- * Unit tier — imports from ../../agents, no VS Code host needed.
- */
-
 import * as assert from "assert";
 
 import {
@@ -15,7 +10,6 @@ import {
   type MementoLike,
 } from "../../agents";
 
-/** Map-backed vscode.Memento stand-in. */
 function fakeMemento(initial?: Record<string, unknown>): MementoLike & {
   store: Map<string, unknown>;
 } {
@@ -45,7 +39,6 @@ suite("frecencyScore", () => {
   });
 
   test("freshly launched: score == count", () => {
-    // age = 0 → decay factor = 1.
     assert.strictEqual(frecencyScore(5, NOW, NOW), 5);
     assert.strictEqual(frecencyScore(42, NOW, NOW), 42);
   });
@@ -62,12 +55,10 @@ suite("frecencyScore", () => {
 
   test("decay is roughly halved per 10-day half-life", () => {
     const now = frecencyScore(10, NOW - 10 * DAY, NOW);
-    // 2^(-1) ≈ 0.5 → ~5.0, allow small float slack.
     assert.ok(Math.abs(now - 5) < 0.01, `expected ~5, got ${now}`);
   });
 
   test("higher count can overcome recency advantage", () => {
-    // A 100-launch agent 30 days ago still beats a 1-launch agent from today.
     const heavyOld = frecencyScore(100, NOW - 30 * DAY, NOW);
     const lightNew = frecencyScore(1, NOW, NOW);
     assert.ok(heavyOld > lightNew, "frequent old should beat rare new");
@@ -112,15 +103,10 @@ suite("sortByFrecency", () => {
       { name: "D", score: 0 },
     ];
     const sorted = sortByFrecency(items, (x) => x.score).map((x) => x.name);
-    // A (score 3) first, then B/C/D in original order.
     assert.deepStrictEqual(sorted, ["A", "B", "C", "D"]);
   });
 
   test("simulated frecency sort matches expected decay behavior", () => {
-    // Claude: launched 20×, last 1 day ago.
-    // Codex: launched 5×, last 0 days ago.
-    // Gemini: never launched (score 0).
-    // Terminal: launched 1×, 20 days ago.
     const agents = [
       { name: "Terminal", c: 1, t: NOW - 20 * DAY },
       { name: "Claude", c: 20, t: NOW - 1 * DAY },
@@ -128,9 +114,8 @@ suite("sortByFrecency", () => {
       { name: "Gemini", c: 0, t: 0 },
     ];
     const sorted = sortByFrecency(agents, (a) => frecencyScore(a.c, a.t, NOW)).map((a) => a.name);
-    // Claude's high count dominates despite Codex being fresher.
     assert.strictEqual(sorted[0], "Claude");
-    assert.strictEqual(sorted[sorted.length - 1], "Gemini"); // never launched → last
+    assert.strictEqual(sorted[sorted.length - 1], "Gemini");
   });
 
   test("does not mutate the input array", () => {
@@ -196,7 +181,7 @@ suite("pruneFrecency", () => {
     const map: FrecencyMap = {
       claude: { c: 3, t: NOW - 1 * DAY },
       codex: { c: 2, t: NOW - 179 * DAY },
-      boundary: { c: 1, t: NOW - 180 * DAY }, // exactly at the horizon — kept (strict >)
+      boundary: { c: 1, t: NOW - 180 * DAY },
       stale: { c: 99, t: NOW - 181 * DAY },
     };
     const pruned = pruneFrecency(map, NOW);
@@ -222,7 +207,6 @@ suite("pruneFrecency", () => {
       },
     });
     recordLaunch(m, "Codex", NOW);
-    // oldagent is past the horizon → gone; claude is fresh → untouched.
     assert.deepStrictEqual(m.store.get("frecency.v1"), {
       claude: { c: 1, t: NOW - 5 * DAY },
       codex: { c: 1, t: NOW },

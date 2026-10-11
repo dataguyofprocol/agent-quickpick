@@ -1,18 +1,4 @@
 #!/usr/bin/env node
-/**
- * Build the status-bar icon font from icons/statusbar-glyph.svg.
- *
- * Produces icons/agent-quickpick.woff — a single-glyph font registered in
- * package.json under `contributes.icons` as `agent-quickpick` and referenced
- * from the status bar as `$(agent-quickpick)`.
- *
- * Icon fonts are monochrome: VS Code renders the glyph in the status-bar
- * foreground color. That's why the glyph is a plain single-path silhouette
- * (the 2x2 agent grid), not the colored extension logo.
- *
- * Run:  node scripts/build-icon-font.js
- * (Regenerate whenever icons/statusbar-glyph.svg changes.)
- */
 const fs = require("fs");
 const path = require("path");
 const { Readable } = require("stream");
@@ -24,7 +10,6 @@ const ICONS_DIR = path.join(__dirname, "..", "icons");
 const GLYPH_SVG = path.join(ICONS_DIR, "statusbar-glyph.svg");
 const OUT_WOFF = path.join(ICONS_DIR, "agent-quickpick.woff");
 
-// The codepoint referenced by fontCharacter in package.json (\\E900).
 const CODEPOINT = 0xe900;
 
 function buildSvgFont() {

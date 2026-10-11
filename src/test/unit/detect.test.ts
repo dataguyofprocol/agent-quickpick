@@ -1,8 +1,3 @@
-/**
- * Install detection (isCmdInstalled): PATH probing, safe-name gating, and the
- * 5-minute result cache. Unit tier — no VS Code host needed.
- */
-
 import * as assert from "assert";
 
 import {
@@ -22,7 +17,6 @@ suite("isCmdInstalled", () => {
   });
 
   test("a definitely-present binary → true", async () => {
-    // `node` is running this test, so it must be on PATH.
     assert.strictEqual(await isCmdInstalled("node"), true);
   });
 
@@ -31,15 +25,11 @@ suite("isCmdInstalled", () => {
   });
 
   test("multi-word cmd checks only the first token", async () => {
-    // `gh` itself may or may not be installed, but the check must not try to
-    // resolve the literal string "gh copilot" as a binary name.
     const result = await isCmdInstalled("gh copilot");
-    // Whatever the result, it should equal checking `gh` alone.
     assert.strictEqual(result, await isCmdInstalled("gh"));
   });
 
   test("unsafe binary names are rejected without hitting the shell", async () => {
-    // Shell metacharacters → treat as not installed, never exec.
     assert.strictEqual(await isCmdInstalled('foo"; rm -rf /'), false);
     assert.strictEqual(await isCmdInstalled("foo && bar"), false);
     assert.strictEqual(await isCmdInstalled("foo$(evil)"), false);
@@ -47,24 +37,19 @@ suite("isCmdInstalled", () => {
   });
 
   test("caches results", async () => {
-    // First call hits the shell.
     const first = await isCmdInstalled("node");
-    // Second call should return from cache without re-running.
     const second = await isCmdInstalled("node");
     assert.strictEqual(first, second);
   });
 
   test("cached miss is honored within the TTL (no re-probe)", async () => {
-    // Poison a fresh "not installed" entry and confirm the read path returns it.
     _poisonInstallCacheForTests("node", false, Date.now());
     assert.strictEqual(await isCmdInstalled("node"), false);
   });
 
   test("launcher probes the launcher binary, not the first token of cmd", async () => {
-    // `node` is on PATH; the check should probe `node` regardless of `cmd`.
     const result = await isCmdInstalled("crush", "node");
     assert.strictEqual(result, true);
-    // An absent launcher should report not installed even if `cmd` would be.
     const absent = await isCmdInstalled("crush", "definitely-not-a-real-cli-xyz123");
     assert.strictEqual(absent, false);
   });
@@ -76,11 +61,9 @@ suite("isCmdInstalled", () => {
   });
 
   test("cache entries expire after the TTL and get re-probed", async () => {
-    // Poison with an old timestamp claiming `node` is NOT installed.
-    _poisonInstallCacheForTests("node", false, Date.now() - 10 * 60 * 1000); // 10 min ago
+    _poisonInstallCacheForTests("node", false, Date.now() - 10 * 60 * 1000);
     const stale = await isCmdInstalled("node");
     assert.strictEqual(stale, true, "expired cache entry should re-probe and find node");
-    // Fresh entries are honored.
     _poisonInstallCacheForTests("node", true, Date.now());
     const fresh = await isCmdInstalled("node");
     assert.strictEqual(fresh, true);
@@ -103,7 +86,7 @@ suite("isSafeBinaryName", () => {
     assert.strictEqual(isSafeBinaryName("foo$(x)"), false);
     assert.strictEqual(isSafeBinaryName("foo|bar"), false);
     assert.strictEqual(isSafeBinaryName("foo>bar"), false);
-    assert.strictEqual(isSafeBinaryName("foo bar"), false); // space → multi-token
+    assert.strictEqual(isSafeBinaryName("foo bar"), false);
   });
 
   test("rejects empty", () => {

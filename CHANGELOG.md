@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.3] — 2026-10-11
+
+### Changed
+- Remove code comments and docstrings across source, tests, scripts, configuration, and SVGs without changing behavior. Keep license attribution and required tooling markers. Add the no-comments rule to `AGENTS.md`.
+
 ## [0.14.2] — 2026-10-11
 
 ### Fixed

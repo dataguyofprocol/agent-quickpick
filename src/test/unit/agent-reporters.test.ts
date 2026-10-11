@@ -1,10 +1,3 @@
-/**
- * Launch-time status reporters: which launches get one, how the user's OpenCode
- * plugins survive the env override, and that every report the shipped reporters
- * emit is one our own OSC 7501 parser accepts.
- * Unit tier — no VS Code host needed.
- */
-
 import * as assert from "assert";
 import * as fs from "fs";
 import * as os from "os";
@@ -150,7 +143,6 @@ suite("shipped Claude reporter settings", () => {
     fs.readFileSync(path.join(REPO_ROOT, "reporters", "claude-settings.json"), "utf8")
   ) as { hooks: Record<string, { matcher?: string; hooks: { command: string }[] }[]> };
 
-  /** The OSC 7501 body a hook command prints, as `printf` would render it. */
   function reportBody(command: string): string {
     const match = /\\033\]7501;(.*?)\\033/.exec(command);
     assert.ok(match, `no OSC 7501 report in: ${command}`);
@@ -191,16 +183,11 @@ suite("shipped Claude reporter settings", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// The OpenCode TUI plugin, driven through a fake V2 plugin API
-// ---------------------------------------------------------------------------
-
 interface FakeSession {
   parentID?: string;
   running?: boolean;
 }
 
-/** Load the ESM plugin from CommonJS (tsc would rewrite a literal `import()`). */
 const importEsm = new Function("p", "return import(p)") as (
   p: string
 ) => Promise<{ default: { setup(api: unknown): () => void } }>;
@@ -245,7 +232,6 @@ suite("shipped OpenCode reporter plugin", () => {
     return (type: string, data: Record<string, unknown>) => listener?.({ details: { type, data } });
   }
 
-  /** The reports written so far, as OSC 7501 bodies. */
   function reports(): string[] {
     const ESC = String.fromCharCode(0x1b);
     return fs

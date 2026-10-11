@@ -1,13 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
-  <!-- deep navy tile; the four swatches pop against it -->
+
   <rect width="128" height="128" rx="28" fill="#0F1226"/>
 
-  <!-- 2x2 grid of agent brand colors: Claude, OpenCode, Command Code, OMP -->
   <rect x="22" y="22" width="36" height="36" rx="9" fill="#FF8C00"/>
   <rect x="70" y="22" width="36" height="36" rx="9" fill="#3B82F6"/>
   <rect x="22" y="70" width="36" height="36" rx="9" fill="#A855F7"/>
   <rect x="70" y="70" width="36" height="36" rx="9" fill="#EC4899"/>
 
-  <!-- selection ring around the Claude-orange swatch: "pick one" -->
   <rect x="15" y="15" width="50" height="50" rx="15" fill="none" stroke="#FFFFFF" stroke-width="5"/>
 </svg>

@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-# Detects whether the current repository belongs to an organization with an
-# additional guidance profile in references/. Prints the profile name
-# ("trailofbits" or "generic") to stdout.
 set -euo pipefail
 
 TOB_ORGS='trailofbits|lifting-bits|crytic'

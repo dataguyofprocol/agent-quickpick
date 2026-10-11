@@ -1,18 +1,3 @@
-/**
- * Bench scenarios for the data-plane hot paths — everything that runs in plain
- * Node without a VS Code host (the same import surface as the unit tier).
- * Scenario list is deliberately short: only paths with a plausible reason to
- * get slower (called per output chunk, per poll tick, per keystroke, or over
- * user-controlled file sizes). Adding one means having a refactor in mind whose
- * impact it would measure — this is an A/B tool, not a scoreboard.
- *
- * Fixtures approximate real shapes: a typical burst of agent terminal output
- * (spinner repaints plus protocol reports), a Claude-style ~/.claude/settings.json
- * at the size seen in the wild (~8 KB) and a stressed variant (~500 KB), a
- * frecency map far larger than any real user's, and terminal counts past the
- * "how many agents would you seriously run" horizon.
- */
-
 import * as vscode from "vscode";
 
 import {
@@ -46,21 +31,17 @@ export interface Scenario {
   name: string;
   iterations?: number;
   warmup?: number;
-  /** Build fixtures; returns the per-iteration function under test. */
   setup(): BenchFn;
-  /** Release scenario-owned resources, when it has any. */
   teardown?(): void;
 }
 
 const NOW = 1_700_000_000_000;
 const MARKER = "agentQuickpick:claude";
 
-/** A plausible *user-owned* hook command (~1.3 KB, like real ones). */
 function userHookCommand(i: number): string {
   return `node -e "/* user hook ${i} */ const x = ${JSON.stringify("y".repeat(1200))};"`;
 }
 
-/** A Claude-style ~/settings.json with `extra` bytes of unrelated user hooks. */
 function claudeSettings(extra: number): Record<string, unknown> {
   const hooks: Record<string, unknown[]> = {};
   const perEvent = Math.max(1, Math.ceil(extra / 6 / 1300));
@@ -73,11 +54,6 @@ function claudeSettings(extra: number): Record<string, unknown> {
   return { model: "sonnet", hooks };
 }
 
-/**
- * One realistic burst of agent output: a TUI repaint (cursor moves + erase-line
- * + braille spinner), a window-title update, an `OSC 9;4` progress report, and
- * an `OSC 7501` status report. This is the per-chunk path.
- */
 function agentBurst(status: "working" | "blocked" | "done"): string {
   const msg = Buffer.from(`Refactoring ${"x".repeat(40)}`).toString("base64");
   return [
@@ -90,7 +66,6 @@ function agentBurst(status: "working" | "blocked" | "done"): string {
   ].join("");
 }
 
-/** A 24-line snapshot of a permission prompt, as a TUI leaves it on screen. */
 const PERMISSION_TAIL = [
   "╭──────────────────────────────────────────────╮",
   "│ Bash command                                 │",
@@ -103,10 +78,6 @@ const PERMISSION_TAIL = [
   "╰──────────────────────────────────────────────╯",
   "  esc to cancel · tab to amend",
 ].join("\n");
-
-// ---------------------------------------------------------------------------
-// Scenarios
-// ---------------------------------------------------------------------------
 
 export const SCENARIOS: Scenario[] = [
   {
@@ -138,7 +109,6 @@ export const SCENARIOS: Scenario[] = [
     setup: () => {
       const tracker = new SessionTracker();
       tracker.track("Claude", "Claude");
-      // Past the startup grace, with output already seen.
       tracker.output("Claude", "start", NOW);
       let clock = NOW + 5_000;
       const chunk = `${PERMISSION_TAIL}\u001b]2;Claude\u0007`;
@@ -169,7 +139,6 @@ export const SCENARIOS: Scenario[] = [
     iterations: 200,
     setup: () => {
       const config = claudeSettings(500 * 1024);
-      // A realistic ours-installed shape: one entry holding ours plus a user's.
       const hooks = config.hooks as Record<string, unknown[]>;
       hooks.Stop = [
         ...(hooks.Stop ?? []),

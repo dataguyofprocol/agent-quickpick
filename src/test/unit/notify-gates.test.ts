@@ -1,9 +1,3 @@
-/**
- * Notification gating logic — which statuses are announced, and how the three
- * channels (toast / OS notification / sound) are independently gated.
- * Unit tier — no VS Code host needed.
- */
-
 import * as assert from "assert";
 
 import {
@@ -99,8 +93,6 @@ suite("shouldSystemNotify", () => {
   });
 
   test("ignores terminal focus by design — unfocused window still notifies", () => {
-    // Regression guard: shouldNotify() suppresses on active terminal; the OS
-    // path must NOT inherit that, or a backgrounded window goes silent.
     assert.ok(!shouldNotify("done", true, true));
     assert.ok(shouldSystemNotify("whenUnfocused", "done", false, true));
   });
@@ -125,8 +117,6 @@ suite("shouldPlaySound", () => {
   });
 
   test("independent of where the notification renders", () => {
-    // No focus/terminal params at all — the cue is the same wherever the
-    // notification lands (in-editor toast or OS notification).
     assert.strictEqual(shouldPlaySound.length, 3);
   });
 });

@@ -1,10 +1,3 @@
-/**
- * The session state machine: source precedence, the fallback ladder, record
- * lifetime, and notification policy. Driven entirely with synthetic output and
- * a fake clock, which is the point of keeping it free of `vscode`.
- * Unit tier — no VS Code host needed.
- */
-
 import * as assert from "assert";
 
 import {
@@ -21,7 +14,6 @@ const title = (value: string) => `\u001b]2;${value}${BEL}`;
 const b64 = (text: string) => Buffer.from(text).toString("base64");
 
 const T0 = 1_700_000_000_000;
-/** Past the startup grace, so heuristics are live. */
 const LIVE = T0 + STARTUP_GRACE_MS + 1_000;
 const SPINNER = title("⠹ claude");
 
@@ -88,8 +80,6 @@ suite("SessionTracker: protocol precedence", () => {
 
   test("a query never changes state", () => {
     const tracker = makeTracker();
-    // Inside the startup grace, so the only thing that *could* move state is a
-    // protocol report — and a query is not one.
     assert.deepStrictEqual(tracker.output("Claude", `\u001b]7501;?${ST}`, T0 + 100), []);
     assert.strictEqual(tracker.get("Claude")?.status, "unknown");
     assert.strictEqual(tracker.get("Claude")?.source, "none");
@@ -117,8 +107,6 @@ suite("SessionTracker: fallback ladder", () => {
   test("a text-derived blocked claim waits for a quiet beat", () => {
     const tracker = makeTracker();
     tracker.output("Claude", "starting\n", LIVE);
-    // The prompt arrives in the same chunk that is still being written: it must
-    // not be believed yet, so the session stays on plain activity.
     tracker.output("Claude", PERMISSION_PROMPT, LIVE + 200);
     assert.strictEqual(tracker.get("Claude")?.status, "working");
     assert.strictEqual(tracker.get("Claude")?.source, "heuristic");
@@ -198,7 +186,6 @@ suite("SessionTracker: fallback ladder", () => {
     tracker.setFallbackEnabled(false);
     assert.deepStrictEqual(tracker.output("Claude", `${SPINNER}esc to interrupt`, LIVE), []);
     assert.strictEqual(tracker.get("Claude")?.status, "unknown");
-    // The protocol still works.
     tracker.output("Claude", osc("state=working"), LIVE + 1_000);
     assert.strictEqual(tracker.get("Claude")?.status, "working");
   });
@@ -207,7 +194,6 @@ suite("SessionTracker: fallback ladder", () => {
     const tracker = makeTracker();
     tracker.output("Claude", "one\n", LIVE);
     assert.deepStrictEqual(tracker.output("Claude", "glitch\n", LIVE + 10), []);
-    // A protocol report bypasses the throttle.
     assert.strictEqual(tracker.output("Claude", osc("state=idle"), LIVE + 20)[0].status, "idle");
   });
 });
@@ -230,8 +216,6 @@ suite("SessionTracker: process lifetime", () => {
   });
 
   test("quitting an agent at rest records done without an alert", () => {
-    // The user typed /q or /exit: they are looking at it. Each case: the state
-    // the session was in when the clean exit arrived.
     const atRest: [string, (t: SessionTracker) => void][] = [
       ["never reported", () => {}],
       ["protocol idle (fresh, or after an interrupt)", (t) => t.output("Claude", osc("state=idle"), LIVE)],
@@ -253,8 +237,6 @@ suite("SessionTracker: process lifetime", () => {
   });
 
   test("a crash is reported even when the agent last said it was working", () => {
-    // Regression: an OSC report used to latch the session, so the exit code was
-    // ignored and a crashed session stayed "working" forever.
     const tracker = makeTracker();
     tracker.output("Claude", osc("state=working"), LIVE);
     const transitions = tracker.execEnd("Claude", 130, LIVE + 500);
@@ -264,12 +246,10 @@ suite("SessionTracker: process lifetime", () => {
   test("a shell activation command's exit inside the grace is not the agent's", () => {
     const tracker = new SessionTracker();
     tracker.track("Claude", "Claude", undefined, T0);
-    // The activation script the shell runs on a fresh terminal.
     tracker.execStart("Claude", T0 + 20);
     assert.deepStrictEqual(tracker.execEnd("Claude", 0, T0 + 60), []);
     assert.strictEqual(tracker.get("Claude")?.status, "unknown");
 
-    // The agent itself, started later, is reported normally.
     tracker.execStart("Claude", T0 + 1_000);
     assert.strictEqual(tracker.execEnd("Claude", 0, T0 + 30_000)[0].status, "done");
   });
@@ -309,7 +289,6 @@ suite("SessionTracker: process lifetime", () => {
     const transient = makeTracker();
     transient.output("Claude", osc("state=working"), LIVE);
     assert.strictEqual(transient.execStart("Claude", LIVE + 2_000)[0].status, "unknown");
-    // And the stale record does not come back on the next chunk.
     transient.output("Claude", "new command\n", LIVE + 2_100);
     assert.notStrictEqual(transient.get("Claude")?.status, "working");
 
@@ -350,7 +329,6 @@ suite("SessionTracker: notification policy", () => {
       false,
       "a second alert inside the window is suppressed"
     );
-    // Status still moves even when the alert is suppressed.
     assert.strictEqual(tracker.get("Claude")?.status, "error");
   });
 });
@@ -362,7 +340,6 @@ suite("SessionTracker: session bookkeeping", () => {
     assert.strictEqual(tracker.resolve("My Claude"), "Claude");
     assert.strictEqual(tracker.get("My Claude")?.agentName, "Claude");
     assert.strictEqual(tracker.rename("My Claude", "My Claude", "Claude"), false);
-    // Renaming back to the creation name drops the alias.
     assert.strictEqual(tracker.rename("My Claude", "Claude", "Claude"), true);
     assert.deepStrictEqual(tracker.keys(), ["Claude"]);
   });
@@ -401,7 +378,6 @@ suite("SessionTracker: session bookkeeping", () => {
     assert.strictEqual(tracker.get("Claude")?.status, "unknown");
     assert.strictEqual(tracker.resolve("My Codex"), "Codex");
     assert.strictEqual(tracker.get("My Codex")?.agentName, "Codex");
-    // Idempotent.
     assert.strictEqual(
       tracker.seed(
         [

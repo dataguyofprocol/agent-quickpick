@@ -1,13 +1,3 @@
-/**
- * The Herdr-derived fallback rule table and its engine.
- *
- * Two things are being pinned here: that the rules fire on the signals they were
- * ported for, and — more important — that the rules Herdr relies on a rendered
- * screen for do NOT fire against a byte stream's history, since a spurious
- * "needs your attention" is worse than a missed one.
- * Unit tier — no VS Code host needed.
- */
-
 import * as assert from "assert";
 
 import {
@@ -22,7 +12,6 @@ import { OscProgress } from "../../terminal-signals";
 
 const b64 = (text: string) => Buffer.from(text).toString("base64");
 
-/** Build a detect input; `bottom` mirrors what TerminalSignals provides. */
 function input(over: {
   title?: string;
   progress?: string;
@@ -56,11 +45,9 @@ suite("manifestFor", () => {
   });
 
   test("does not let a two-letter alias claim an unrelated agent", () => {
-    // "oh-my-pi" shares a token with pi but is a different program.
     assert.strictEqual(manifestFor("oh-my-pi", DETECT_MANIFESTS), undefined);
     assert.strictEqual(manifestFor("Custom 3", DETECT_MANIFESTS), undefined);
     assert.strictEqual(manifestFor("Terminal", DETECT_MANIFESTS), undefined);
-    // Retired agents have no rule table at all.
     assert.strictEqual(manifestFor("Antigravity", DETECT_MANIFESTS), undefined);
   });
 });
@@ -71,9 +58,6 @@ suite("rule table integrity", () => {
   });
 
   test("every blocked rule opts in to notifying", () => {
-    // The policy: only a rule that declares itself a blocker may raise an alert,
-    // so a rule that claims `blocked` without the flag would silently never
-    // notify. Catch that here rather than in the field.
     for (const manifest of DETECT_MANIFESTS) {
       for (const rule of manifest.rules) {
         if (rule.state === "blocked") {
@@ -153,8 +137,6 @@ suite("detect: text rules that survive a stream", () => {
       "esc to cancel · tab to amend",
     ].join("\n");
     assert.strictEqual(fire("Claude", { text: prompt })?.state, "blocked");
-    // Same question quoted in a *transcript*, with no option line: not a live
-    // prompt, and must not be reported as one.
     assert.strictEqual(
       fire("Claude", { text: "Do you want to proceed?\nesc to cancel" }),
       undefined
@@ -168,9 +150,6 @@ suite("detect: text rules that survive a stream", () => {
 
 suite("detect: rules deliberately NOT ported", () => {
   test("a dismissed Claude permission blurb does not re-arm", () => {
-    // Herdr's `legacy_no_prompt_blocker` matched these bare needles. In a
-    // screen they are gone once answered; in a stream they persist, so we drop
-    // the rule entirely.
     assert.strictEqual(fire("Claude", { text: "waiting for permission\ntab to amend" }), undefined);
     assert.strictEqual(fire("Claude", { text: "review your answers" }), undefined);
   });
@@ -182,7 +161,6 @@ suite("detect: rules deliberately NOT ported", () => {
 
   test("a Gemini transcript mentioning yes/allow is not a live prompt", () => {
     assert.strictEqual(fire("Gemini", { text: "❯ allow this for me please" }), undefined);
-    // The explicit UI markers still work.
     assert.strictEqual(fire("Gemini", { text: "│ Apply this change" })?.state, "blocked");
   });
 
@@ -193,7 +171,6 @@ suite("detect: rules deliberately NOT ported", () => {
 
 suite("detect: priority and tie-breaking", () => {
   test("the highest priority match wins", () => {
-    // Title says blocked (1100) while the tail says working (110?): blocked wins.
     const result = fire("Codex", {
       title: "codex — Action Required",
       text: "esc to interrupt",

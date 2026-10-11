@@ -1,9 +1,3 @@
-/**
- * Icon + color resolution — the one piece of agent resolution that constructs
- * runtime vscode objects (ThemeIcon / ThemeColor / Uri), so it runs in the
- * VS Code host tier.
- */
-
 import * as assert from "assert";
 import * as vscode from "vscode";
 import * as path from "path";
@@ -27,7 +21,6 @@ suite("resolveIconPath", () => {
   });
 
   test("absolute path that exists → Uri.file", () => {
-    // Use a file we know exists: one of the bundled icons.
     const abs = path.join(EXTENSION_URI.fsPath, "icons", "claude.svg");
     const icon = resolveIconPath(abs, EXTENSION_URI);
     assert.ok(icon instanceof vscode.Uri);
@@ -80,7 +73,6 @@ suite("resolveIconPath", () => {
   });
 
   test("every built-in agent's icon resolves to a bundled Uri", () => {
-    // The curated defaults must never render the fallback terminal glyph.
     for (const agent of BUILTIN_AGENTS) {
       const icon = resolveIconPath(agent.icon, EXTENSION_URI);
       assert.ok(
@@ -107,9 +99,6 @@ suite("resolveColor", () => {
   });
 
   test("declared-but-unused built-in color ids resolve (claudeProxy, claudeGlm)", () => {
-    // These ids are declared in contributes.colors and referenced by the
-    // README's custom-agent example, but no longer used by BUILTIN_AGENTS —
-    // they must still resolve, not silently fall back to undefined.
     const proxy = resolveColor("agentQuickpick.claudeProxy");
     assert.ok(proxy instanceof vscode.ThemeColor);
     assert.strictEqual(proxy!.id, "agentQuickpick.claudeProxy");

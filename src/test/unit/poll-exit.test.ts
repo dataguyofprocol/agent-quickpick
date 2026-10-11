@@ -1,20 +1,8 @@
-/**
- * The universal exit-status poll — the backstop for terminals where shell
- * integration never came up. Uses fake terminals ({name, creationOptions,
- * exitStatus}); pollExitStatuses only touches those fields of vscode.Terminal.
- *
- * Whether a session has *already* reached a final state now belongs to the
- * tracker (`SessionTracker.execEnd` keeps a protocol-reported done/error over a
- * later exit), so the poll reports raw exits and nothing else.
- * Unit tier — no VS Code host needed.
- */
-
 import * as assert from "assert";
 import type * as vscode from "vscode";
 
 import { pollExitStatuses } from "../../lifecycle";
 
-/** Structural fake of vscode.Terminal — only name + exitStatus are read. */
 function terminal(name: string, exitCode?: number): vscode.Terminal {
   return {
     name,
@@ -22,7 +10,6 @@ function terminal(name: string, exitCode?: number): vscode.Terminal {
   } as vscode.Terminal;
 }
 
-/** Fake with a frozen creation name, like a tab renamed after launch. */
 function renamedTerminal(
   currentName: string,
   creationName: string,

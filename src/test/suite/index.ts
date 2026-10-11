@@ -2,17 +2,7 @@ import * as path from "path";
 import Mocha from "mocha";
 import { glob } from "glob";
 
-/**
- * Minimal reporter that writes through console.log instead of process.stdout.
- *
- * Some editor forks (Trae) pipe the extension host's console to the launcher's
- * stdout but silently drop process.stdout writes — which is where every stock
- * mocha reporter writes — so failures were invisible ("N tests failed" with no
- * names). This reporter keeps the output coarse (suite names, failures with
- * stacks, final tally) since it's a diagnostics channel, not interactive UX.
- */
 class ConsoleReporter extends Mocha.reporters.Base {
-  /** Full titles of failed tests from the most recent run — read by run(). */
   static lastFailures: string[] | undefined;
 
   private passed = 0;
@@ -58,23 +48,16 @@ export async function run(): Promise<void> {
     reporter: ConsoleReporter,
   });
 
-  // Host-tier tests only — unit tests (out/test/unit) run via plain mocha in
-  // `npm run test:unit`, without launching a VS Code window.
   const testsRoot = path.resolve(__dirname, "..");
 
   const files = await glob("suite/**/*.test.js", { cwd: testsRoot });
   files.sort();
 
-  // Add files to the test suite
   files.forEach((f) => mocha.addFile(path.resolve(testsRoot, f)));
 
   return new Promise<void>((resolve, reject) => {
     mocha.run((failures: number, stats?: Mocha.Stats) => {
       if (failures > 0) {
-        // Some editor forks (Trae) drop ALL extension-host console/stdout
-        // output; the rejection message is the one channel that reaches the
-        // launcher. Include the failure names (from the shared reporter
-        // state) so `npm test` always says WHAT failed, not just how many.
         const names = (ConsoleReporter.lastFailures ?? [])
           .map((f) => `  ✗ ${f}`)
           .join("\n");

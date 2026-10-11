@@ -1,8 +1,3 @@
-/**
- * Agent registry merging (loadAgents) + built-in defaults.
- * Unit tier — imports from ../../agents, no VS Code host needed.
- */
-
 import * as assert from "assert";
 
 import {
@@ -57,8 +52,6 @@ suite("loadAgents", () => {
   });
 
   test("every agent with detection support is a built-in (launch wiring depends on it)", () => {
-    // These agents have fallback rule tables, so they must stay launchable from
-    // the picker for those rules to ever be reachable.
     const names = new Set(loadAgents(undefined).map((a) => a.name.toLowerCase()));
     for (const expected of ["claude", "droid", "codex", "opencode", "pi"]) {
       assert.ok(names.has(expected), `${expected} must be a built-in agent`);
@@ -66,10 +59,6 @@ suite("loadAgents", () => {
   });
 
   test("pi and oh-my-pi are distinct built-ins, pi immediately before it", () => {
-    // Two different CLIs: `pi` (reports OSC 7501) and oh-my-pi's `omp`
-    // (launch-only). loadAgents matches by exact lowercased name, so the
-    // overlap is harmless — but the ordering keeps oh-my-pi last, which the
-    // defaults test above asserts.
     const agents = loadAgents(undefined);
     const pi = agents.findIndex((a) => a.name === "pi");
     const omp = agents.findIndex((a) => a.name === "oh-my-pi");
@@ -89,7 +78,6 @@ suite("loadAgents", () => {
     assert.strictEqual(claude!.cmd, "my-claude");
     assert.strictEqual(claude!.icon, "rocket");
     assert.strictEqual(claude!.color, "terminal.ansiRed");
-    // Same total count (overrode, didn't add)
     assert.strictEqual(agents.length, BUILTIN_AGENTS.length);
   });
 
@@ -97,7 +85,6 @@ suite("loadAgents", () => {
     const agents = loadAgents([{ name: "claude", cmd: "my-claude" }]);
     const claude = agents.find((a) => a.name === "claude");
     assert.ok(claude);
-    // Built-in "Claude" replaced (only one claude entry survives)
     assert.strictEqual(agents.filter((a) => a.name.toLowerCase() === "claude").length, 1);
   });
 
@@ -162,8 +149,6 @@ suite("loadAgents", () => {
     const crush = agents.find((a) => a.name === "Crush");
     assert.ok(crush, "Crush should be a built-in");
     assert.strictEqual(crush!.cmd, "crush");
-    // Crush is a Go binary distributed via brew/npm/go/apt — not a uvx/PyPI
-    // package. Detection must probe `crush` itself, not a launcher.
     assert.ok(!crush!.launcher, "Crush must not carry a launcher");
   });
 
@@ -175,8 +160,6 @@ suite("loadAgents", () => {
 
 suite("programStatusEnv", () => {
   test("pi gets its documented OSC 7501 opt-in", () => {
-    // VS Code cannot answer the protocol's feature-detection query, and pi only
-    // reports after that answer; PI_PROGRAM_STATUS=1 is pi's own override.
     assert.deepStrictEqual(programStatusEnv("pi", {}), { PI_PROGRAM_STATUS: "1" });
     assert.deepStrictEqual(programStatusEnv("Pi", {}), { PI_PROGRAM_STATUS: "1" });
     assert.deepStrictEqual(programStatusEnv(" pi ", {}), { PI_PROGRAM_STATUS: "1" });
@@ -193,8 +176,6 @@ suite("programStatusEnv", () => {
   });
 
   test("no other agent gets env injected", () => {
-    // Claude Code and Droid also gate on the terminal's reply, but neither ships
-    // an override, so there is nothing truthful to set for them.
     for (const name of ["Claude", "Codex", "OpenCode", "Droid", "Amp", "Terminal", "pi2", "oh-my-pi"]) {
       assert.strictEqual(programStatusEnv(name, {}), undefined, name);
     }

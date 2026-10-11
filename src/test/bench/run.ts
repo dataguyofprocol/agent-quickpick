@@ -1,17 +1,3 @@
-/**
- * Bench entry point. Two modes:
- *
- *   npm run bench                               # run all scenarios, print table, save snapshot
- *   npm run bench -- --compare a.json b.json    # diff two saved snapshots (no run)
- *
- * The refactor A/B workflow: bench on the old code (snapshot A), apply the
- * refactor, bench again (snapshot B), then --compare A B. Same machine,
- * ideally same background load; expect a few % of jitter run-to-run — which is
- * why the compare table flags |Δmedian| >= 10% instead of presenting raw
- * deltas as truth. This is a measuring tool, not a gate: it always exits 0
- * unless invoked wrong.
- */
-
 import * as fs from "fs";
 import * as path from "path";
 
@@ -29,7 +15,7 @@ interface Snapshot {
 }
 
 const RESULTS_DIR = "bench-results";
-const FLAG_THRESHOLD = 0.1; // |Δmedian| ≥ 10% gets a ▲/▼ marker
+const FLAG_THRESHOLD = 0.1;
 
 function fmtDuration(ns: number): string {
   if (ns < 1e3) return `${Math.round(ns)} ns`;
@@ -106,8 +92,6 @@ async function runMode(): Promise<void> {
   console.log("");
 
   const results: BenchResult[] = [];
-  // Scenario names are static, so column widths can come from them up front —
-  // rows print progressively below and must align with this header.
   const header = ["scenario", "iter", "median", "p95", "ops/s", "heap/op"];
   const widths = header.map((h, i) =>
     i === 0 ? Math.max(h.length, ...SCENARIOS.map((s) => s.name.length)) : h.length
@@ -118,7 +102,6 @@ async function runMode(): Promise<void> {
     const result = await bench(scenario.name, fn, scenario);
     await scenario.teardown?.();
     results.push(result);
-    // Progressive output — the suite takes seconds, not ms.
     console.log(row(
       [result.name, String(result.iterations), fmtDuration(result.medianNs), fmtDuration(result.p95Ns), fmtOps(result.opsPerSec), fmtBytes(result.heapBytesPerOp)],
       widths

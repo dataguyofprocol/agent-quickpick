@@ -1,9 +1,3 @@
-/**
- * OSC 7501 — the Program Status Protocol. Parser conformance (including the
- * spec's "malformed optional key = absent, malformed state/id = discard" rule)
- * and the record-selection policy. Unit tier — no VS Code host needed.
- */
-
 import * as assert from "assert";
 
 import {
@@ -14,7 +8,6 @@ import {
 
 const osc = (body: string, term = "\u001b\\") => `\u001b]7501;${body}${term}`;
 
-/** Parse and assert the result is a record (not a query or a rejection). */
 function record(body: string) {
   const parsed = parseProgramStatusBody(body);
   assert.ok(parsed !== undefined && parsed !== "query", `expected a record for "${body}"`);
@@ -42,9 +35,6 @@ suite("parseProgramStatusBody", () => {
   });
 
   test("a malformed optional key is absent, never fatal (spec §Syntax)", () => {
-    // `kind` is only meaningful with `blocked`, and an unknown kind is ignored
-    // rather than discarding the report — otherwise a later revision adding a
-    // kind would silently break every agent that used it.
     assert.deepStrictEqual(parseProgramStatusBody("state=working:kind=auth"), { state: "working" });
     assert.deepStrictEqual(parseProgramStatusBody("state=blocked:kind=telepathy"), {
       state: "blocked",
@@ -77,22 +67,17 @@ suite("parseProgramStatusBody", () => {
   });
 
   test("discards a report whose id breaks the grammar", () => {
-    // A value outside the pair charset makes the *pair* malformed, so it is
-    // skipped and the report is still valid — only an id that parses as a pair
-    // but breaks the id grammar may discard the report.
     assert.deepStrictEqual(parseProgramStatusBody("state=done:id=has space"), { state: "done" });
     assert.strictEqual(parseProgramStatusBody("state=done:id=a//b"), undefined);
     assert.strictEqual(parseProgramStatusBody("state=done:id=nine/deep/levels/x/y/z/8/9/10"), undefined);
     assert.strictEqual(parseProgramStatusBody(`state=done:id=${"a".repeat(33)}`), undefined);
     assert.strictEqual(parseProgramStatusBody("state=done:id="), undefined);
-    // A legal id round-trips.
     assert.strictEqual(record("state=done:id=build/test").id, "build/test");
   });
 
   test("discards a report with undecodable or control-character text", () => {
     assert.strictEqual(parseProgramStatusBody(`state=done:msg=${b64("two\nlines")}`), undefined);
     assert.strictEqual(parseProgramStatusBody(`state=done:msg=${b64("bell\u0007")}`), undefined);
-    // `////` is in the value charset but is not valid UTF-8.
     assert.strictEqual(parseProgramStatusBody("state=done:msg=////"), undefined);
     assert.strictEqual(parseProgramStatusBody("state=done:title=//"), undefined);
   });
@@ -191,7 +176,6 @@ suite("ProgramStatusParser", () => {
     }
     const records = parser.snapshot().records;
     assert.ok(records.size <= OSC7501_MAX_RECORDS, `kept ${records.size}`);
-    // The newest survive; the oldest are gone.
     assert.ok(records.has(`task${OSC7501_MAX_RECORDS + 7}`));
     assert.ok(!records.has("task0"));
   });

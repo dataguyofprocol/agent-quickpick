@@ -1,10 +1,3 @@
-/**
- * Deterministic seeded fuzz — adversarial inputs through the legacy-hook strip
- * pipeline and the config JSON round-trip. Hand-rolled mulberry32 RNG so
- * failures are reproducible by seed, with zero new dependencies.
- * Unit tier — no VS Code host needed.
- */
-
 import * as assert from "assert";
 
 import {
@@ -15,7 +8,6 @@ import {
   writeConfigJson,
 } from "../../legacy-hooks";
 
-/** mulberry32 — tiny deterministic 32-bit PRNG. */
 function rng(seed: number): () => number {
   let a = seed >>> 0;
   return () => {
@@ -29,8 +21,6 @@ function rng(seed: number): () => number {
 const pick = <T>(r: () => number, arr: readonly T[]): T =>
   arr[Math.floor(r() * arr.length)];
 
-// Quotes, shell metacharacters, controls, and unicode — as single-char strings
-// so nothing terminates a literal prematurely.
 const HOSTILE_CHARS = [
   "'", '"', ";", "|", "`", "$", "&", "\\", "<", ">", "!", "*", "?", "#",
   "~", "%", "@", "+", "=", "[", "]", "{", "}", "(", ")", "^", ":",
@@ -45,18 +35,12 @@ function hostileString(r: () => number, len: number): string {
   return out;
 }
 
-/** Generate a random Claude/Droid-style config value (not always sane). */
 function randomConfig(r: () => number): Record<string, unknown> {
   const config: Record<string, unknown> = {};
   if (r() < 0.5) config.model = pick(r, ["opus", "sonnet", null, 42]);
   if (r() < 0.7) {
-    // Random hooks section: valid entries, junk entries, user hooks, stale ours.
     const hooks: Record<string, unknown[]> = {};
     for (const event of ["Stop", "Notification", "UserPromptSubmit", "SessionStart", "customEvent"]) {
-      // Non-empty arrays only for the wired events: an empty wired-event
-      // array is absorbed by install (we append into it) and pruned by
-      // remove — documented behavior, not a round-trip bug (pinned in
-      // command-hooks.test.ts). Non-wired events may be empty.
       const minLen = event === "SessionStart" || event === "customEvent" ? 0 : 1;
       if (r() < 0.6) {
         hooks[event] = Array.from({ length: minLen + Math.floor(r() * 2) }, () => {
@@ -66,7 +50,7 @@ function randomConfig(r: () => number): Record<string, unknown> {
           const inner: Array<Record<string, unknown>> = [];
           if (r() < 0.6) inner.push({ type: "command", command: `user-cmd-${Math.floor(r() * 100)}` });
           if (r() < 0.3) inner.push({ type: "command", command: `node -e "/*agentQuickpick:test:v1*/stale"` });
-          if (r() < 0.2) inner.push({ command: 123 }); // malformed hook object
+          if (r() < 0.2) inner.push({ command: 123 });
           const entry: Record<string, unknown> = { hooks: inner };
           if (r() < 0.3) entry.matcher = "*";
           return entry;
@@ -81,10 +65,8 @@ function randomConfig(r: () => number): Record<string, unknown> {
 const MARKER = "agentQuickpick:test";
 const HOOK_NAME = "agent-quickpick";
 
-/** Generate a random Antigravity-style hooks.json value (not always sane). */
 function randomNamedConfig(r: () => number): Record<string, unknown> {
   const config: Record<string, unknown> = {};
-  // A few unrelated named hooks with random shapes.
   const otherHookCount = Math.floor(r() * 3);
   for (let h = 0; h < otherHookCount; h++) {
     const events: Record<string, unknown[]> = {};
@@ -102,8 +84,6 @@ function randomNamedConfig(r: () => number): Record<string, unknown> {
     }
     config[`user-hook-${h}`] = r() < 0.3 ? { enabled: false, ...events } : events;
   }
-  // Our named entry, in random states: absent, disabled, partially installed,
-  // carrying stale generations, or carrying user handlers.
   if (r() < 0.7) {
     const entry: Record<string, unknown> = {};
     if (r() < 0.4) entry.enabled = r() < 0.5;
@@ -150,8 +130,6 @@ suite("fuzz: legacy strip is marker-scoped and idempotent", () => {
       const hadOurs = hasCommandHooks(config, MARKER);
       const stripped = stripCommandHooks(config, MARKER);
       assert.strictEqual(hasCommandHooks(stripped, MARKER), false, `iter ${i}: ours must be gone`);
-      // A config that never carried one of ours must come back byte-identical:
-      // this is the promise that a user's own hooks are never touched.
       if (!hadOurs) {
         assert.deepStrictEqual(stripped, config, `iter ${i}: must be untouched when ours are absent`);
       }
@@ -194,7 +172,6 @@ suite("fuzz: legacy strip is marker-scoped and idempotent", () => {
       const twice = stripNamedHooks(once, HOOK_NAME, MARKER);
       assert.deepStrictEqual(twice, once, `iter ${i}: strip must be idempotent`);
       assert.strictEqual(hasCommandHooks(once, MARKER), false, `iter ${i}: ours must be gone`);
-      // Other named entries are never touched.
       for (const key of Object.keys(config)) {
         if (key === HOOK_NAME) continue;
         assert.deepStrictEqual(
@@ -226,7 +203,6 @@ suite("fuzz: config JSON round-trip stability", () => {
       assert.doesNotThrow(() => {
         parsed = readConfigJson(text);
       }, `iter ${i}: must tolerate arbitrary text`);
-      // Result is always an object (or the empty object), never a primitive.
       assert.ok(parsed === undefined || typeof parsed === "object");
     }
   });

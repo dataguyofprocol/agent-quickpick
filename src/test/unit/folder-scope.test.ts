@@ -1,8 +1,3 @@
-/**
- * Repo-scoping helpers (folderOf / folderBasename / filterSessionsByFolder).
- * Unit tier — no VS Code host needed.
- */
-
 import * as assert from "assert";
 
 import {

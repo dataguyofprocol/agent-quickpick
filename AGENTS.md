@@ -8,6 +8,13 @@ A VS Code extension (`engines.vscode: ^1.93.0`, `@types/vscode` pinned to 1.85).
 
 The 1.93 floor exists because status detection reads each agent's terminal output through shell integration (`onDidStartTerminalShellExecution` + `execution.read()`); that API landed in 1.93. Don't lower it without a replacement path.
 
+## No comments or docstrings
+
+- Do not add code comments, JSDoc, docstrings, section banners, or commented-out code in source, tests, scripts, configuration, or SVGs.
+- Use clear names, types, and tests to explain behavior. Put prose documentation in Markdown files.
+- Keep only required license attribution and operative tooling directives, such as shebangs and editor synchronization markers. Do not use this exception for explanatory comments or type-check suppressions.
+- Preserve comment-shaped text inside runtime strings, regexes, and test fixtures. It is data, not a code comment.
+
 ## On every change
 
 After making any code change, do both of these before handing back — don't leave them to the user:

@@ -1,24 +1,3 @@
-/**
- * Minimal benchmark harness for the data-plane hot paths — dependency-free on
- * purpose (the extension ships zero runtime deps; the bench shouldn't quietly
- * become the first). Not a `*.test.ts` file, so neither test tier's glob
- * (out/test/unit/*.test.js, host suite) ever collects it. Reached via
- * `npm run bench` → out/test/bench/run.js.
- *
- * Methodology, such as it is:
- *  - Fixed warmup, then per-iteration `hrtime.bigint()` around each call. The
- *    timing overhead itself is sub-µs and — crucially — identical across runs,
- *    which is what matters for the before/after A/B this exists for.
- *  - median + p95 instead of mean: one-off outliers (GC pause, scheduler)
- *    land in p95, not in the number you compare.
- *  - Heap delta per op via forced GC before/after the timed loop. Rough by
- *    construction (a mid-loop GC undercounts churn), but consistent enough to
- *    catch a refactor that starts cloning a large config per call. Needs
- *    `--expose-gc` (the npm script passes it); reports null without it.
- *
- * These numbers are for comparing runs on the same machine — never absolutes.
- */
-
 export interface BenchResult {
   name: string;
   iterations: number;
@@ -29,19 +8,14 @@ export interface BenchResult {
 }
 
 export interface BenchOptions {
-  /** Timed iterations (after warmup). Default 2000. */
   iterations?: number;
-  /** Untimed warmup calls. Default max(50, iterations / 10). */
   warmup?: number;
 }
 
-/** The per-iteration function under test; sync for tight-loop measurement, async for I/O scenarios. */
 export type BenchFn = (() => void) | (() => Promise<void>);
 
-/** `--expose-gc`'s global; absent when run without the flag. */
 const maybeGc = (globalThis as { gc?: () => void }).gc;
 
-/** Force a GC and read heapUsed, or null when --expose-gc wasn't passed. */
 function heapAfterGc(): number | null {
   if (!maybeGc) return null;
   maybeGc();
@@ -76,12 +50,6 @@ function warmupCount(iterations: number, warmup?: number): number {
   return warmup ?? Math.max(50, Math.floor(iterations / 10));
 }
 
-/**
- * Run one scenario. The first (probe) call decides sync vs async handling —
- * async fns pay ~1µs/iteration of await overhead, which only matters for the
- * sub-µs pure functions that are benchmarked sync anyway. Always resolves, so
- * the runner can `await` uniformly.
- */
 export function bench(name: string, fn: BenchFn, opts: BenchOptions = {}): Promise<BenchResult> {
   const iterations = opts.iterations ?? 2000;
   const warmup = warmupCount(iterations, opts.warmup);
