@@ -1,7 +1,7 @@
 import * as assert from "assert";
 import * as vscode from "vscode";
 
-import { LifecycleContext } from "../../extension";
+import { LifecycleContext } from "../../lifecycle-context";
 import type { SessionState } from "../../lifecycle";
 
 function makeFakeContext(): vscode.ExtensionContext {

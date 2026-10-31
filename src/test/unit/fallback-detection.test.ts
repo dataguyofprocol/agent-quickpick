@@ -75,8 +75,7 @@ suite("rule table integrity", () => {
     for (const manifest of DETECT_MANIFESTS) {
       for (const rule of manifest.rules) {
         assert.ok(
-          rule.state === undefined ||
-            ["idle", "working", "blocked", "unknown"].includes(rule.state),
+          ["idle", "working", "blocked"].includes(rule.state),
           `${manifest.id}/${rule.id} claims ${rule.state}`
         );
       }
@@ -188,17 +187,6 @@ suite("detect: priority and tie-breaking", () => {
       ],
     };
     assert.strictEqual(detect(manifest, input({ text: "x" }))?.rule.id, "first");
-  });
-
-  test("skipStateUpdate publishes nothing", () => {
-    const manifest: DetectManifest = {
-      id: "test",
-      rules: [
-        { id: "viewer", state: "unknown", priority: 100, region: "text", skipStateUpdate: true, contains: ["viewer"] },
-        { id: "fallback", state: "working", priority: 1, region: "text", contains: ["viewer"] },
-      ],
-    };
-    assert.strictEqual(detect(manifest, input({ text: "viewer" })), undefined);
   });
 
   test("a rule whose region has no content cannot match", () => {

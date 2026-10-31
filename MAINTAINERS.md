@@ -6,7 +6,7 @@
 npm install
 npm run compile     # tsc
 npm run watch       # tsc -w
-npm run test:unit   # fast tier: plain mocha, no editor window, ~3s (320+ tests)
+npm run test:unit   # fast tier: plain mocha, no editor window, ~3s (358 tests)
 npm test            # full gate: unit tier + host tier in a real editor window
 npm run bench       # micro-benchmarks over the pure modules (see "Benchmarking")
 npm run package     # builds the .vsix
@@ -35,7 +35,7 @@ Reading the output honestly:
 
 What the bench **cannot** cover, and how to measure it manually when it matters:
 
-- **First-command activation** (probe prewarm, port file write, poller start): Command Palette → "Developer: Startup Timings" → Extension Activation Timings, in a window where the extension activates on first command.
+- **First-command activation** (probe prewarm, poller start): Command Palette → "Developer: Startup Timings" → Extension Activation Timings, in a window where the extension activates on first command.
 - **PATH-probe burst** (~20 `command -v` spawns on first open): time `resolveAgents` ad hoc, or profile the extension host (Developer: Take Extension Host Profile) while opening the quick pick cold.
 - **Real memory leaks** (timers/terminals retained past dispose): these live in the vscode-coupled half and show up as retention across a long-lived window, not as heap-per-op. The extension host profile's heap snapshot diff is the tool; the last real leaks (launch-delay timer, unpruned frecency) were found by reading, and that pattern held across the whole audit.
 
@@ -48,8 +48,8 @@ What the bench **cannot** cover, and how to measure it manually when it matters:
 - `src/test/unit/*.test.ts` — unit tier (plain mocha, no host): the OSC 7501 parser and record selection, terminal signal capture, the fallback rule table (including a suite asserting the rules *not* ported from Herdr stay silent on transcript-like text), the session state machine, legacy-hook removal, status-bar/notification rendering, the exit-status poller, a seeded fuzz suite, and repo-consistency drift guards (colors ↔ package.json, icons ↔ BUILTIN_AGENTS, legacy targets ↔ built-ins).
 - `src/test/bench/*.ts` — manually-run micro-benchmarks over the same vscode-free modules (see "Benchmarking"). Not collected by either test tier.
 - `src/test/suite/*.test.ts` — host tier (@vscode/test-electron): icon/color resolution, `LifecycleContext` orchestration, activation smoke tests.
-- `icons/*.svg` — one brand icon per agent. House style: 24×24 viewBox, `rx=6` rounded background, white glyph on brand fill.
-- `package.json` — `contributes.configuration` (settings schema), `contributes.colors` (8 custom theme colors), command + keybinding.
+- `icons/*.svg` — one brand icon per agent. House style: 24×24 viewBox, `rx=6` rounded background, white glyph on brand fill. `gemini.svg`, `claude-proxy.svg`, and `claude-glm.svg` are intentional custom-agent assets — bundled icons selectable by filename from a user's `agentQuickpick.agents` entry, not used by any built-in — and the `agentQuickpick.claudeProxy` and `agentQuickpick.claudeGlm` color ids exist for the same reason.
+- `package.json` — `contributes.configuration` (settings schema), `contributes.colors` (9 custom theme colors), command + keybinding.
 - `.github/assets/` — README screenshots (real PNG captures).
 
 ## Adding a built-in agent
@@ -72,7 +72,7 @@ To refresh the PNGs in `.github/assets/`:
 - **Detection** runs `command -v <binary>` (or `where` on Windows) per agent, in parallel. Results are cached for 5 minutes (TTL); the cache is also cleared whenever any `agentQuickpick.*` setting changes. When `launcher` is set (e.g. `uvx`), the launcher binary is probed instead of the first token of `cmd`. Binary names are validated against a safe-character allowlist before exec — a malicious or typo'd setting can't inject shell commands.
 - **Frecency** scores each agent by `count × 2^(-ageDays/10)`; the quick-pick list is stable-sorted by that score so the most-used agents float to the top while never-launched agents keep curated order. Scores live in `globalState` (`frecency.v1`) so they persist across restarts and sync across machines via Settings Sync.
 - **Icon resolution** falls back gracefully: codicon → existing file → `terminal` codicon. A broken icon path never breaks the quick pick.
-- **Colors** are a closed set (8 built-ins + 16 ANSI) because VS Code registers theme colors at publish time only.
+- **Colors** are a closed set (9 built-ins + 16 ANSI) because VS Code registers theme colors at publish time only.
 - **Status detection** answers one question per agent terminal — is it working, blocked on you, finished, or failed — and reports it through notifications, the status bar, and the sessions picker. It has four sources, in strict priority order. **(1) OSC 7501, the Program Status Protocol** (`src/program-status.ts`) is authoritative: an agent that reports its own state is believed, and its records can be numerous and hierarchical (a `blocked` sub-task is surfaced even while the root record says `working`; a missing optional key is treated as absent, a malformed `state`/`id` or a bad `msg`/`title` discards the report). **(2) Heuristics** (`src/detect.ts`, `src/detect-manifests.ts`) cover agents that don't speak the protocol, matching window-title spinners/glyphs, `OSC 9;4` progress and a line-oriented text tail against per-agent rule tables derived from Herdr's detection manifests (Apache-2.0 — see `THIRD_PARTY_NOTICES.md`; the rule model is Herdr's, but only its `osc_title`/`osc_progress`/text regions are portable without a rendered screen buffer, so every screen-geometry rule was dropped rather than approximated, and only a rule flagged `visibleBlocker` may raise a notification). **(3) The process exit code** is the only non-protocol source allowed to claim `done`/`error`. **(4) Otherwise the session settles**: output means `working`, quiet means `idle`, and `unknown` until evidence arrives. `done`/`error` latch — they survive the process, while `working`/`blocked` are dropped at the next command — so a crash is reported even after a `done` report, and stale text cannot revive a finished session. Output reaches `src/session-tracker.ts` (the pure state machine) from `src/terminal-signals.ts`, fed by VS Code's shell integration over `execution.read()`; that API is 1.93+, which is where `engines.vscode` sits, and a 3-second exit-status poll backstops terminals whose shell integration never comes up. User-driven tab renames alias the current display name back to the terminal's creation-time key, so status, notifications, exit polling and click-to-focus all follow; launch naming reserves those keys so a new launch cannot collide with a running renamed tab. VS Code's stable API cannot badge a terminal tab after creation, so per-session status surfaces via notifications + the status bar instead. **Launch-time reporters** (`src/agent-reporters.ts`, `reporters/`) make Claude Code (`--settings` hooks) and OpenCode V2 (a TUI plugin via `OPENCODE_CLI_CONFIG_CONTENT`) emit OSC 7501 for the terminals we launch, since neither can report natively in VS Code; they are per-launch shims, not installs. **Nothing is installed.** Earlier releases wrote hooks into agent configs; `src/legacy-hooks.ts` now only *removes* them (marker-scoped, plus a one-time automatic cleanup after upgrade) and the "Remove Legacy Lifecycle Hooks" command remains for a manual sweep.
 
 ## Static-analysis triage (post-v0.9.2 Mimosa deep scan)

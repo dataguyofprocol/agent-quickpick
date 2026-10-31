@@ -129,6 +129,18 @@ export function sortByFrecency<T>(
     .map((d) => d.item);
 }
 
+export function sortedByLaunchFrecency<T extends { name: string }>(
+  agents: T[],
+  state: MementoLike,
+  now: number
+): T[] {
+  const frecency = readFrecency(state);
+  return sortByFrecency(agents, (a) => {
+    const e = frecency[a.name.toLowerCase()];
+    return e ? frecencyScore(e.c, e.t, now) : 0;
+  });
+}
+
 export function loadAgents(userAgents: unknown): AgentConfig[] {
   const byName = new Map<string, AgentConfig>();
   const order: string[] = [];
@@ -180,22 +192,21 @@ export function isSafeBinaryName(binary: string): boolean {
   return SAFE_BINARY_RE.test(binary);
 }
 
+export function probeBinary(cmd: string, launcher?: string): string {
+  const trimmedLauncher = (launcher ?? "").trim();
+  if (trimmedLauncher !== "") {
+    return trimmedLauncher;
+  }
+  return (cmd ?? "").trim().split(/\s+/)[0];
+}
+
 export async function isCmdInstalled(cmd: string, launcher?: string): Promise<boolean> {
   if ((cmd ?? "").trim() === "") {
     return true;
   }
-  let binary: string;
-  const trimmedLauncher = (launcher ?? "").trim();
-  if (trimmedLauncher !== "") {
-    if (!isSafeBinaryName(trimmedLauncher)) {
-      return false;
-    }
-    binary = trimmedLauncher;
-  } else {
-    binary = (cmd ?? "").trim().split(/\s+/)[0];
-    if (!isSafeBinaryName(binary)) {
-      return false;
-    }
+  const binary = probeBinary(cmd, launcher);
+  if (!isSafeBinaryName(binary)) {
+    return false;
   }
   const cached = installCache.get(binary);
   const now = Date.now();

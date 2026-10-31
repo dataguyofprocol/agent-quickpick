@@ -15,7 +15,6 @@ export interface ProgramStatusRecord {
 }
 
 export interface ProgramStatusSnapshot {
-  records: ReadonlyMap<string, ProgramStatusRecord>;
   status: LifecycleStatus;
   kind?: WaitingReason;
   progress?: number;
@@ -28,10 +27,15 @@ export interface ProgramStatusSnapshot {
 export const OSC7501_MAX_SEQUENCE = 4096;
 export const OSC7501_MAX_RECORDS = 256;
 
-const MAX_PENDING = OSC7501_MAX_SEQUENCE * 2;
 const PREFIX = "\u001b]7501;";
 const STATES: readonly ProgramState[] = ["idle", "working", "done", "blocked", "error", "clear"];
 const KINDS: readonly WaitingReason[] = ["permission", "question", "auth"];
+
+export const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/;
+
+export function stripControlChars(text: string): string {
+  return text.replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
+}
 
 function decodeText(value: string, encodedLimit: number, decodedLimit: number): string | undefined {
   if (value.length > encodedLimit || !/^[A-Za-z0-9+/]*={0,2}$/.test(value)) return undefined;
@@ -39,7 +43,7 @@ function decodeText(value: string, encodedLimit: number, decodedLimit: number): 
     const bytes = Buffer.from(value, "base64");
     if (bytes.length > decodedLimit) return undefined;
     const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-    return /[\u0000-\u001f\u007f-\u009f]/.test(text) ? undefined : text;
+    return CONTROL_CHARS.test(text) ? undefined : text;
   } catch {
     return undefined;
   }
@@ -112,146 +116,94 @@ const CHILD_RANK: Record<ProgramState, number> = {
   clear: 5,
 };
 
-function selectRecord(
-  records: ReadonlyMap<string, ProgramStatusRecord>
-): [string, ProgramStatusRecord] | undefined {
-  const live = [...records.entries()].filter(([, record]) => record.state !== "clear");
+type RecordEntry = { value: ProgramStatusRecord; used: number };
+
+function selectRecord(records: ReadonlyMap<string, RecordEntry>): [string, RecordEntry] | undefined {
+  const live = [...records.entries()].filter(([, entry]) => entry.value.state !== "clear");
   if (live.length === 0) return undefined;
 
-  const rootFirst = (a: [string, ProgramStatusRecord], b: [string, ProgramStatusRecord]) =>
+  const rootFirst = (a: [string, RecordEntry], b: [string, RecordEntry]) =>
     (a[0] === "" ? 0 : 1) - (b[0] === "" ? 0 : 1);
 
   const attention = live
-    .filter(([, record]) => record.state === "blocked" || record.state === "error")
-    .sort((a, b) => CHILD_RANK[a[1].state] - CHILD_RANK[b[1].state] || rootFirst(a, b));
+    .filter(([, entry]) => entry.value.state === "blocked" || entry.value.state === "error")
+    .sort((a, b) => CHILD_RANK[a[1].value.state] - CHILD_RANK[b[1].value.state] || rootFirst(a, b));
   if (attention.length > 0) return attention[0];
 
   const root = live.find(([id]) => id === "");
   if (root) return root;
 
-  return live.sort((a, b) => CHILD_RANK[a[1].state] - CHILD_RANK[b[1].state])[0];
+  return live.sort((a, b) => CHILD_RANK[a[1].value.state] - CHILD_RANK[b[1].value.state])[0];
 }
 
 export class ProgramStatusParser {
-  private pending = "";
-  private readonly records = new Map<string, { value: ProgramStatusRecord; used: number }>();
+  private readonly records = new Map<string, RecordEntry>();
   private clock = 0;
   private hasReported = false;
 
-  push(chunk: string): ProgramStatusSnapshot | undefined {
-    this.pending = (this.pending + chunk).slice(-MAX_PENDING);
-    let changed = false;
+  ingest(body: string): ProgramStatusSnapshot | undefined {
+    const nested = body.lastIndexOf(PREFIX);
+    const payload = nested >= 0 ? body.slice(nested + PREFIX.length) : body;
+    if (Buffer.byteLength(payload, "utf8") + 9 > OSC7501_MAX_SEQUENCE) return undefined;
 
-    for (;;) {
-      const start = this.pending.indexOf(PREFIX);
-      if (start < 0) {
-        this.pending = this.pending.slice(-(PREFIX.length - 1));
-        break;
+    const report = parseProgramStatusBody(payload);
+    if (!report || report === "query") return undefined;
+
+    this.hasReported = true;
+    const id = report.id ?? "";
+    if (report.state === "clear") {
+      for (const key of [...this.records.keys()]) {
+        if (!id || key === id || key.startsWith(`${id}/`)) this.records.delete(key);
       }
-      const bodyStart = start + PREFIX.length;
-
-      let end = -1;
-      let term = 0;
-      let nested = -1;
-      for (let i = bodyStart; i < this.pending.length; i++) {
-        if (this.pending.startsWith(PREFIX, i)) {
-          nested = i;
-          break;
-        }
-        const code = this.pending.charCodeAt(i);
-        if (code === 7) {
-          end = i;
-          term = 1;
-          break;
-        }
-        if (code === 27) {
-          if (i + 1 === this.pending.length) break;
-          if (this.pending.charCodeAt(i + 1) === 92) {
-            end = i;
-            term = 2;
-            break;
+    } else {
+      this.records.set(id, { value: report, used: ++this.clock });
+      if (this.records.size > OSC7501_MAX_RECORDS) {
+        let oldestKey: string | undefined;
+        let oldestUsed = Infinity;
+        for (const [key, entry] of this.records) {
+          if (entry.used < oldestUsed) {
+            oldestUsed = entry.used;
+            oldestKey = key;
           }
         }
+        if (oldestKey !== undefined) this.records.delete(oldestKey);
       }
-
-      if (nested >= 0) {
-        this.pending = this.pending.slice(nested);
-        continue;
-      }
-      if (end < 0) {
-        this.pending = this.pending.slice(start);
-        if (this.pending.length > OSC7501_MAX_SEQUENCE) {
-          const next = this.pending.indexOf(PREFIX, 1);
-          this.pending = next >= 0 ? this.pending.slice(next) : "";
-          continue;
-        }
-        break;
-      }
-
-      const full = this.pending.slice(start, end + term);
-      const body = this.pending.slice(bodyStart, end);
-      this.pending = this.pending.slice(end + term);
-
-      const report =
-        Buffer.byteLength(full, "utf8") <= OSC7501_MAX_SEQUENCE
-          ? parseProgramStatusBody(body)
-          : undefined;
-      if (!report || report === "query") continue;
-
-      this.hasReported = true;
-      const id = report.id ?? "";
-      if (report.state === "clear") {
-        for (const key of [...this.records.keys()]) {
-          if (!id || key === id || key.startsWith(`${id}/`)) this.records.delete(key);
-        }
-      } else {
-        this.records.set(id, { value: report, used: ++this.clock });
-        if (this.records.size > OSC7501_MAX_RECORDS) {
-          let oldestKey: string | undefined;
-          let oldestUsed = Infinity;
-          for (const [key, entry] of this.records) {
-            if (entry.used < oldestUsed) {
-              oldestUsed = entry.used;
-              oldestKey = key;
-            }
-          }
-          if (oldestKey !== undefined) this.records.delete(oldestKey);
-        }
-      }
-      changed = true;
     }
 
-    return changed ? this.snapshot() : undefined;
+    return this.snapshot();
   }
 
-  dropTransient(dropIdle = false): void {
+  dropTransient(): void {
     for (const [id, entry] of [...this.records]) {
       const state = entry.value.state;
-      if (state === "working" || state === "blocked" || (dropIdle && state === "idle")) {
+      if (state === "working" || state === "blocked") {
         this.records.delete(id);
       }
     }
   }
 
-  snapshot(): ProgramStatusSnapshot {
+  recordsForTest(): ReadonlyMap<string, ProgramStatusRecord> {
     const records = new Map<string, ProgramStatusRecord>();
     for (const [id, entry] of this.records) records.set(id, { ...entry.value });
+    return records;
+  }
 
-    const selected = selectRecord(records);
+  snapshot(): ProgramStatusSnapshot {
+    const selected = selectRecord(this.records);
     if (!selected) {
-      return { records, status: "unknown", reported: this.hasReported };
+      return { status: "unknown", reported: this.hasReported };
     }
 
-    const [id, record] = selected;
+    const [id, entry] = selected;
+    const record = entry.value;
     let app = record.app;
     const segments = id.split("/");
     while (!app && segments.length > 0) {
       segments.pop();
-      app = records.get(segments.join("/"))?.app;
+      app = this.records.get(segments.join("/"))?.value.app;
     }
 
     return {
-      records,
       status: record.state === "clear" ? "unknown" : record.state,
       reported: this.hasReported,
       ...(record.kind ? { kind: record.kind } : {}),

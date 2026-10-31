@@ -149,6 +149,18 @@ suite("shipped Claude reporter settings", () => {
     return match[1];
   }
 
+  test("the checked-in file is byte-identical to what the build script generates", () => {
+    const { buildClaudeSettings } = require(path.join(
+      REPO_ROOT,
+      "scripts",
+      "build-claude-reporter-settings.js"
+    )) as { buildClaudeSettings: () => string };
+    assert.strictEqual(
+      fs.readFileSync(path.join(REPO_ROOT, "reporters", "claude-settings.json"), "utf8"),
+      buildClaudeSettings()
+    );
+  });
+
   test("every hook emits a report our parser accepts", () => {
     for (const [event, entries] of Object.entries(settings.hooks)) {
       for (const entry of entries) {

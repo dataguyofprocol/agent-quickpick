@@ -1,7 +1,7 @@
 import * as assert from "assert";
 import * as vscode from "vscode";
 
-import { windowFocusUri } from "../../extension";
+import { windowFocusUri } from "../../lifecycle-context";
 import { sessionFromFocusUri } from "../../lifecycle";
 
 suite("notification focus URI", () => {

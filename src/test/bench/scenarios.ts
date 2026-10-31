@@ -15,7 +15,6 @@ import {
   statusBarTooltip,
   pollExitStatuses,
 } from "../../lifecycle";
-import { ProgramStatusParser } from "../../program-status";
 import { TerminalSignals } from "../../terminal-signals";
 import { SessionTracker } from "../../session-tracker";
 import {
@@ -81,13 +80,14 @@ const PERMISSION_TAIL = [
 
 export const SCENARIOS: Scenario[] = [
   {
-    name: "osc7501: parse + snapshot (realistic burst)",
+    name: "osc7501: signals parse + snapshot (realistic burst)",
     iterations: 4000,
     setup: () => {
       const burst = agentBurst("working");
-      const parser = new ProgramStatusParser();
+      const signals = new TerminalSignals();
       return () => {
-        parser.push(burst);
+        signals.push(burst);
+        signals.snapshot();
       };
     },
   },

@@ -341,7 +341,9 @@ suite("SessionTracker: session bookkeeping", () => {
     assert.strictEqual(tracker.get("My Claude")?.agentName, "Claude");
     assert.strictEqual(tracker.rename("My Claude", "My Claude", "Claude"), false);
     assert.strictEqual(tracker.rename("My Claude", "Claude", "Claude"), true);
-    assert.deepStrictEqual(tracker.keys(), ["Claude"]);
+    assert.strictEqual(tracker.all().length, 1, "renames never create a second session");
+    assert.strictEqual(tracker.get("Claude")?.name, "Claude");
+    assert.strictEqual(tracker.resolve("My Claude"), "My Claude", "the stale alias is dropped");
   });
 
   test("output addressed by display name reaches the session", () => {

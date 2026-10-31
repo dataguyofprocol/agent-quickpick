@@ -33,6 +33,42 @@ suite("TerminalSignals: OSC 7501", () => {
     signals.push(`\u001b]7501;?${ST}`, 1000);
     assert.strictEqual(signals.reportVersion(), 0, "a query is not a report");
   });
+
+  test("parses fragmented BEL- and ST-terminated sequences", () => {
+    const signals = new TerminalSignals();
+    const sequence = `\u001b]7501;state=working${BEL}`;
+    signals.push(sequence.slice(0, 5), 1000);
+    assert.strictEqual(signals.snapshot(), undefined);
+    signals.push(sequence.slice(5), 1000);
+    assert.strictEqual(signals.snapshot()?.status, "working");
+    signals.push(`\u001b]7501;state=blocked:kind=question${ST}`, 1000);
+    assert.strictEqual(signals.snapshot()?.kind, "question");
+  });
+
+  test("an oversized unterminated sequence cannot wedge the parser", () => {
+    const signals = new TerminalSignals();
+    signals.push(`\u001b]7501;${"A".repeat(9000)}`, 1000);
+    assert.strictEqual(signals.snapshot(), undefined);
+    signals.push(`\u001b]7501;state=done${ST}`, 1000);
+    assert.strictEqual(signals.snapshot()?.status, "done");
+  });
+
+  test("the size cap admits 4087 payload bytes under both terminators, never 4088", () => {
+    const body = `state=done:pad=${"a".repeat(4072)}`;
+    assert.strictEqual(Buffer.byteLength(body, "utf8"), 4087);
+
+    const accepted = new TerminalSignals();
+    accepted.push(`\u001b]7501;${body}${BEL}`, 1000);
+    assert.strictEqual(accepted.snapshot()?.status, "done");
+    accepted.push(`\u001b]7501;${body}${ST}`, 1000);
+    assert.strictEqual(accepted.reportVersion(), 2);
+
+    const rejected = new TerminalSignals();
+    rejected.push(`\u001b]7501;${body}a${BEL}`, 1000);
+    rejected.push(`\u001b]7501;${body}a${ST}`, 1000);
+    assert.strictEqual(rejected.snapshot(), undefined);
+    assert.strictEqual(rejected.reportVersion(), 0);
+  });
 });
 
 suite("TerminalSignals: window title", () => {
@@ -166,10 +202,11 @@ suite("TerminalSignals: execution boundary", () => {
     assert.strictEqual(signals.snapshot()?.status, "unknown");
   });
 
-  test("reset clears the protocol state too", () => {
+  test("startExecution keeps the latched protocol state", () => {
     const signals = new TerminalSignals();
     signals.push(`\u001b]7501;state=done${ST}`, 1000);
-    signals.reset();
-    assert.strictEqual(signals.snapshot(), undefined);
+    signals.startExecution();
+    assert.strictEqual(signals.snapshot()?.status, "done");
+    assert.strictEqual(signals.reportVersion(), 1);
   });
 });

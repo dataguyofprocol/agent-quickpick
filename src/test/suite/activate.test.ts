@@ -4,6 +4,7 @@ import * as vscode from "vscode";
 const COMMANDS = [
   "agentQuickpick.open",
   "agentQuickpick.sessions",
+  "agentQuickpick.renameSession",
   "agentQuickpick.removeHooks",
   "agentQuickpick.openKeybindings",
 ];

@@ -29,14 +29,14 @@ suite("pollExitStatuses", () => {
     assert.strictEqual(pollExitStatuses([], AGENTS).size, 0);
   });
 
-  test("agent terminal exited 0 → done with exitCode", () => {
+  test("agent terminal exited 0 → exitCode 0", () => {
     const result = pollExitStatuses([terminal("Claude", 0)], AGENTS);
-    assert.deepStrictEqual(result.get("Claude"), { status: "done", exitCode: 0 });
+    assert.strictEqual(result.get("Claude"), 0);
   });
 
-  test("agent terminal exited non-zero → error with exitCode", () => {
+  test("agent terminal exited non-zero → its exitCode", () => {
     const result = pollExitStatuses([terminal("Claude", 130)], AGENTS);
-    assert.deepStrictEqual(result.get("Claude"), { status: "error", exitCode: 130 });
+    assert.strictEqual(result.get("Claude"), 130);
   });
 
   test("numbered sessions match their agent (counter stripped)", () => {
@@ -50,7 +50,7 @@ suite("pollExitStatuses", () => {
 
   test("renamed tab still matches its original creation name", () => {
     const result = pollExitStatuses([renamedTerminal("My Claude", "Claude", 0)], AGENTS);
-    assert.deepStrictEqual(result.get("My Claude"), { status: "done", exitCode: 0 });
+    assert.strictEqual(result.get("My Claude"), 0);
   });
 
   test("non-agent terminals are ignored", () => {

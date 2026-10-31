@@ -2,7 +2,9 @@ import * as path from "path";
 import * as vscode from "vscode";
 
 import type { LifecycleStatus, WaitingReason } from "./program-status";
+import { stripControlChars } from "./program-status";
 import type { SessionState } from "./session-tracker";
+import { isSessionTerminal } from "./agents";
 
 export type { LifecycleStatus, WaitingReason };
 export type { SessionState } from "./session-tracker";
@@ -28,12 +30,12 @@ export function countByStatus(states: SessionState[]): Record<LifecycleStatus, n
 export function statusBarText(counts: Record<LifecycleStatus, number>): string {
   const glyph = "$(agent-quickpick)";
   const parts: string[] = [];
-  if (counts.blocked > 0) parts.push(`${counts.blocked}⏸`);
-  if (counts.error > 0) parts.push(`${counts.error}✗`);
-  if (counts.done > 0) parts.push(`${counts.done}✓`);
-  if (counts.working > 0) parts.push(`${counts.working}●`);
-  if (counts.idle > 0) parts.push(`${counts.idle}○`);
-  if (counts.unknown > 0) parts.push(`${counts.unknown}?`);
+  if (counts.blocked > 0) parts.push(`${counts.blocked}${STATUS_GLYPH.blocked}`);
+  if (counts.error > 0) parts.push(`${counts.error}${STATUS_GLYPH.error}`);
+  if (counts.done > 0) parts.push(`${counts.done}${STATUS_GLYPH.done}`);
+  if (counts.working > 0) parts.push(`${counts.working}${STATUS_GLYPH.working}`);
+  if (counts.idle > 0) parts.push(`${counts.idle}${STATUS_GLYPH.idle}`);
+  if (counts.unknown > 0) parts.push(`${counts.unknown}${STATUS_GLYPH.unknown}`);
 
   if (parts.length === 0) {
     return `${glyph} Agent`;
@@ -272,7 +274,7 @@ export function notificationMessage(
   detail?: string
 ): { text: string; action: string } | null {
   const suffix = repo && repo.trim() !== "" ? ` · ${repo.trim()}` : "";
-  const cleanDetail = detail?.replace(/[\u0000-\u001f\u007f-\u009f]/g, "").slice(0, 160);
+  const cleanDetail = detail !== undefined ? stripControlChars(detail).slice(0, 160) : undefined;
   const extra = cleanDetail ? ` · ${cleanDetail}` : "";
   switch (status) {
     case "done":
@@ -286,13 +288,6 @@ export function notificationMessage(
     default:
       return null;
   }
-}
-
-export function classifyWaitingMessage(message: unknown): WaitingReason | undefined {
-  if (typeof message !== "string" || message === "") {
-    return undefined;
-  }
-  return message.toLowerCase().includes("permission") ? "permission" : undefined;
 }
 
 export function waitingHeadline(agentName: string, reason?: WaitingReason): string {
@@ -313,11 +308,6 @@ export function waitingLabel(reason?: WaitingReason): string {
   }
 }
 
-export interface PolledExit {
-  status: "done" | "error";
-  exitCode?: number;
-}
-
 export function terminalCreationName(t: vscode.Terminal): string {
   const options = t.creationOptions as { name?: unknown } | undefined;
   return typeof options?.name === "string" && options.name.trim() !== ""
@@ -328,18 +318,13 @@ export function terminalCreationName(t: vscode.Terminal): string {
 export function pollExitStatuses(
   terminals: readonly vscode.Terminal[],
   agentNames: Set<string>
-): Map<string, PolledExit> {
-  const result = new Map<string, PolledExit>();
+): Map<string, number> {
+  const result = new Map<string, number>();
   for (const t of terminals) {
-    const creationName = terminalCreationName(t);
-    const base = creationName.replace(/ \(\d+\)$/, "");
-    if (!agentNames.has(base.toLowerCase())) continue;
+    if (!isSessionTerminal(terminalCreationName(t), agentNames)) continue;
     const exit = t.exitStatus;
     if (!exit || exit.code === undefined) continue;
-    result.set(t.name, {
-      status: exit.code === 0 ? "done" : "error",
-      exitCode: exit.code,
-    });
+    result.set(t.name, exit.code);
   }
   return result;
 }

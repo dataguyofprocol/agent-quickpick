@@ -96,7 +96,7 @@ suite("statusBarText", () => {
     );
   });
 
-  test("unknown only → ○ (reconnecting)", () => {
+  test("unknown only → ?", () => {
     assert.strictEqual(
       statusBarText(counts({ unknown: 2 })),
       "$(agent-quickpick) 2?"
@@ -205,7 +205,7 @@ suite("statusBarTooltip", () => {
     assert.ok(!tooltip.includes("·"), "should not append a folder suffix");
   });
 
-  test("uses 'reconnecting' label for unknown status", () => {
+  test("uses 'unknown' label for unknown status", () => {
     const tooltip = statusBarTooltip([
       makeState("Claude", "Claude", "unknown", 100),
     ]);

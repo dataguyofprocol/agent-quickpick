@@ -1,8 +1,12 @@
-import { ProgramStatusParser, type ProgramStatusSnapshot } from "./program-status";
+import {
+  ProgramStatusParser,
+  stripControlChars,
+  type ProgramStatusSnapshot,
+} from "./program-status";
 
 export const TEXT_TAIL_LINES = 24;
 const OSC_PENDING_MAX = 4096;
-export const OSC_TITLE_MAX = 256;
+const OSC_TITLE_MAX = 256;
 export const OSC_PROGRESS_TTL_MS = 10_000;
 
 export interface OscProgress {
@@ -13,7 +17,7 @@ export interface OscProgress {
 }
 
 function sanitize(payload: string): string {
-  return payload.replace(/[\u0000-\u001f\u007f-\u009f]/g, "").slice(0, OSC_TITLE_MAX);
+  return stripControlChars(payload).slice(0, OSC_TITLE_MAX);
 }
 
 class TextTail {
@@ -178,7 +182,7 @@ export class TerminalSignals {
 
   private handleOsc(body: string, now: number): void {
     if (body.startsWith("7501;")) {
-      const snapshot = this.status.push(`\u001b]7501;${body.slice(5)}\u001b\\`);
+      const snapshot = this.status.ingest(body.slice(5));
       if (snapshot) {
         this.latest = snapshot;
         this.oscReportCount++;
@@ -217,12 +221,6 @@ export class TerminalSignals {
     this.tail.reset();
     this.status.dropTransient();
     if (this.latest?.reported) this.latest = this.status.snapshot();
-  }
-
-  reset(): void {
-    this.startExecution();
-    this.latest = undefined;
-    this.pendingOsc = "";
   }
 
   snapshot(): ProgramStatusSnapshot | undefined {

@@ -145,10 +145,6 @@ export class SessionTracker {
     return [...this.sessions.values()].map((entry) => entry.state);
   }
 
-  keys(): string[] {
-    return [...this.sessions.keys()];
-  }
-
   rename(oldDisplayName: string, newDisplayName: string, stableSessionName: string): boolean {
     this.aliases.delete(oldDisplayName);
     if (stableSessionName === newDisplayName) this.aliases.delete(newDisplayName);
@@ -315,7 +311,6 @@ export class SessionTracker {
   }
 
   private accept(entry: Tracked, result: DetectResult, now: number): DetectResult | undefined {
-    if (result.state === "unknown") return undefined;
     if (result.state === "blocked" && now - entry.lastChunkAt < BLOCKED_QUIET_MS) return undefined;
     return result;
   }

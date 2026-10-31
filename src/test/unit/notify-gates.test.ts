@@ -7,7 +7,6 @@ import {
   shouldPlaySound,
   isAnnouncedStatus,
   notificationMessage,
-  classifyWaitingMessage,
   waitingHeadline,
   waitingLabel,
 } from "../../lifecycle";
@@ -93,7 +92,6 @@ suite("shouldSystemNotify", () => {
   });
 
   test("ignores terminal focus by design — unfocused window still notifies", () => {
-    assert.ok(!shouldNotify("done", true, true));
     assert.ok(shouldSystemNotify("whenUnfocused", "done", false, true));
   });
 });
@@ -180,33 +178,6 @@ suite("notificationMessage", () => {
     const msg = notificationMessage("Claude", "error");
     assert.ok(msg);
     assert.strictEqual(msg!.text, "✗ Claude error");
-  });
-});
-
-suite("waiting reasons — classifier (Claude message text)", () => {
-  test("permission mention → permission", () => {
-    assert.strictEqual(
-      classifyWaitingMessage("Claude needs your permission to use Bash"),
-      "permission"
-    );
-  });
-
-  test("case-insensitive permission match", () => {
-    assert.strictEqual(
-      classifyWaitingMessage("CLAUDE NEEDS YOUR PERMISSION TO USE WebFetch"),
-      "permission"
-    );
-  });
-
-  test("waiting-for-input message → no reason (generic wait)", () => {
-    assert.strictEqual(classifyWaitingMessage("Claude is waiting for your input"), undefined);
-  });
-
-  test("empty / non-string / missing message → no reason", () => {
-    assert.strictEqual(classifyWaitingMessage(""), undefined);
-    assert.strictEqual(classifyWaitingMessage(undefined), undefined);
-    assert.strictEqual(classifyWaitingMessage(42), undefined);
-    assert.strictEqual(classifyWaitingMessage(null), undefined);
   });
 });
 

@@ -33,7 +33,7 @@ npm run package        # vsce package -> *.vsix
 npm run build:iconfont # ONLY when icons/statusbar-glyph.svg changes (rebuilds the woff)
 ```
 
-**Both tiers run stale code unless you `npm run compile` first.** The scripts execute compiled JS under `out/`, and there is no precompile hook. CI runs `compile` → `test`. Always compile after editing `.ts` before testing.
+**Both tiers execute compiled JS under `out/`.** `npm test`, `npm run test:unit`, and `npm run bench` compile first via their `pre*` hooks, so a plain run never executes stale code; a direct mocha invocation (single-file runs below) has no such hook — compile after editing `.ts` before one. CI runs `test`.
 
 ### Two test tiers
 
@@ -100,7 +100,7 @@ Rules that must not regress:
 
 ## CI / release
 
-`.github/workflows/ci.yml` runs on push to `main` and `feat/v1`, PRs to `main`. Matrix: Ubuntu, macOS, Windows; Node 20; `fail-fast: false`. **Packaging + vsix artifact upload happen only on Linux.** Publishing (when needed) is manual via `npm run publish:vscode` (vsce) and `npm run publish:openvsx` (ovsx). Default branch is `main`; active feature work happens on `feat/v1`.
+`.github/workflows/ci.yml` runs on push to `main` and PRs to `main`. Matrix: Ubuntu, macOS, Windows; Node 20; `fail-fast: false`. **Packaging + vsix artifact upload happen only on Linux.** Publishing (when needed) is manual via `npm run publish:vscode` (vsce) and `npm run publish:openvsx` (ovsx). Default branch is `main`; active feature work happens on `feat/v1`.
 
 ## Other references
 

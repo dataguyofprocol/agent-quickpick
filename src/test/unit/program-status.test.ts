@@ -6,8 +6,6 @@ import {
   parseProgramStatusBody,
 } from "../../program-status";
 
-const osc = (body: string, term = "\u001b\\") => `\u001b]7501;${body}${term}`;
-
 function record(body: string) {
   const parsed = parseProgramStatusBody(body);
   assert.ok(parsed !== undefined && parsed !== "query", `expected a record for "${body}"`);
@@ -96,98 +94,90 @@ suite("parseProgramStatusBody", () => {
 });
 
 suite("ProgramStatusParser", () => {
-  test("parses fragmented BEL- and ST-terminated sequences", () => {
-    const parser = new ProgramStatusParser();
-    const sequence = osc("state=working", "\u0007");
-    assert.strictEqual(parser.push(sequence.slice(0, 5)), undefined);
-    assert.strictEqual(parser.push(sequence.slice(5))?.status, "working");
-    assert.strictEqual(parser.push(osc("state=blocked:kind=question"))?.kind, "question");
-  });
-
   test("returns a snapshot only when a record changes", () => {
     const parser = new ProgramStatusParser();
-    assert.ok(parser.push(osc("state=working")), "a report yields a snapshot");
-    assert.strictEqual(parser.push("plain output with no protocol traffic"), undefined);
-    assert.strictEqual(parser.push(osc("?")), undefined);
+    assert.ok(parser.ingest("state=working"), "a report yields a snapshot");
+    assert.strictEqual(parser.ingest("state=waiting"), undefined);
+    assert.strictEqual(parser.ingest("?"), undefined);
   });
 
   test("a query never updates state", () => {
     const parser = new ProgramStatusParser();
-    assert.strictEqual(parser.push(osc("?")), undefined);
+    assert.strictEqual(parser.ingest("?"), undefined);
     assert.strictEqual(parser.snapshot().reported, false);
+  });
+
+  test("an embedded prefix yields to the innermost report", () => {
+    const parser = new ProgramStatusParser();
+    const snapshot = parser.ingest(`state=working:\u001b]7501;state=blocked:\u001b]7501;state=done`);
+    assert.strictEqual(snapshot?.status, "done");
   });
 
   test("carries app down from an ancestor record", () => {
     const parser = new ProgramStatusParser();
-    parser.push(osc("state=working:app=deploy"));
-    const snapshot = parser.push(osc("state=blocked:kind=permission:id=eu-west"));
+    parser.ingest("state=working:app=deploy");
+    const snapshot = parser.ingest("state=blocked:kind=permission:id=eu-west");
     assert.strictEqual(snapshot?.status, "blocked");
     assert.strictEqual(snapshot?.app, "deploy");
   });
 
   test("clear removes the addressed record and its descendants", () => {
     const parser = new ProgramStatusParser();
-    parser.push(osc("state=working:id=task"));
-    assert.strictEqual(parser.push(osc("state=blocked:id=task/approval"))?.status, "blocked");
-    assert.strictEqual(parser.push(osc("state=clear:id=task/approval"))?.status, "working");
-    assert.strictEqual(parser.push(osc("state=clear:id=task"))?.status, "unknown");
+    parser.ingest("state=working:id=task");
+    assert.strictEqual(parser.ingest("state=blocked:id=task/approval")?.status, "blocked");
+    assert.strictEqual(parser.ingest("state=clear:id=task/approval")?.status, "working");
+    assert.strictEqual(parser.ingest("state=clear:id=task")?.status, "unknown");
   });
 
   test("clear with no id removes every record", () => {
     const parser = new ProgramStatusParser();
-    parser.push(osc("state=working:id=a"));
-    parser.push(osc("state=blocked:id=b"));
-    const snapshot = parser.push(osc("state=clear"));
+    parser.ingest("state=working:id=a");
+    parser.ingest("state=blocked:id=b");
+    const snapshot = parser.ingest("state=clear");
     assert.strictEqual(snapshot?.status, "unknown");
-    assert.strictEqual(snapshot?.records.size, 0);
+    assert.strictEqual(parser.recordsForTest().size, 0);
   });
 
   suite("record selection", () => {
     test("attention wins over the root, and the root wins ties", () => {
       const parser = new ProgramStatusParser();
-      parser.push(osc("state=working"));
+      parser.ingest("state=working");
       assert.strictEqual(
-        parser.push(osc("state=blocked:kind=permission:id=eu-west"))?.status,
+        parser.ingest("state=blocked:kind=permission:id=eu-west")?.status,
         "blocked",
         "a blocked sub-task is what the user must act on"
       );
-      parser.push(osc("state=error:id=us-east"));
+      parser.ingest("state=error:id=us-east");
       assert.strictEqual(parser.snapshot().status, "blocked", "blocked outranks error");
     });
 
     test("a done root is not masked by a stale working child", () => {
       const parser = new ProgramStatusParser();
-      parser.push(osc("state=done"));
-      assert.strictEqual(parser.push(osc("state=working:id=sub"))?.status, "done");
+      parser.ingest("state=done");
+      assert.strictEqual(parser.ingest("state=working:id=sub")?.status, "done");
     });
 
     test("with no root, the most informative child is shown", () => {
       const parser = new ProgramStatusParser();
-      parser.push(osc("state=idle:id=a"));
-      assert.strictEqual(parser.push(osc("state=working:id=b"))?.status, "working");
-      assert.strictEqual(parser.push(osc("state=done:id=b"))?.status, "done");
+      parser.ingest("state=idle:id=a");
+      assert.strictEqual(parser.ingest("state=working:id=b")?.status, "working");
+      assert.strictEqual(parser.ingest("state=done:id=b")?.status, "done");
     });
   });
 
   test("caps the record set, evicting the least recently updated", () => {
     const parser = new ProgramStatusParser();
     for (let i = 0; i < OSC7501_MAX_RECORDS + 8; i++) {
-      parser.push(osc(`state=working:id=task${i}`));
+      parser.ingest(`state=working:id=task${i}`);
     }
-    const records = parser.snapshot().records;
+    const records = parser.recordsForTest();
     assert.ok(records.size <= OSC7501_MAX_RECORDS, `kept ${records.size}`);
     assert.ok(records.has(`task${OSC7501_MAX_RECORDS + 7}`));
     assert.ok(!records.has("task0"));
   });
 
-  test("an oversized unterminated sequence cannot wedge the parser", () => {
-    const parser = new ProgramStatusParser();
-    parser.push(`\u001b]7501;${"A".repeat(9000)}`);
-    assert.strictEqual(parser.push(osc("state=done"))?.status, "done");
-  });
-
   test("surfaces the protocol's progress in the snapshot", () => {
     const parser = new ProgramStatusParser();
-    assert.strictEqual(parser.push(osc("state=working:progress=42"))?.progress, 42);
+    assert.strictEqual(parser.ingest("state=working:progress=42")?.progress, 42);
   });
 });

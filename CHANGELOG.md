@@ -4,6 +4,12 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.4] — 2026-10-31
+
+### Changed
+- **Internal streamlining with no behavior change.** The OSC 7501 parser no longer carries its own escape-sequence transport — terminal signal capture now hands it report bodies directly; the fallback rule engine drops generality no shipped rule uses and memoizes pattern compilation; the exit-status poller stops computing data nothing reads; and lifecycle tracking and notification spawning move out of the 1,100-line `extension.ts` into their own module. The Claude reporter settings file is now generated from a single event table instead of ten copies of the same shell template.
+- The marketplace description now names the agents that actually ship as built-ins.
+
 ## [0.14.3] — 2026-10-11
 
 ### Changed

@@ -1,6 +1,7 @@
+import type { WaitingReason } from "./program-status";
 import type { OscProgress } from "./terminal-signals";
 
-export type DetectState = "idle" | "working" | "blocked" | "unknown";
+export type DetectState = "idle" | "working" | "blocked";
 
 export type DetectRegion = "osc_title" | "osc_progress" | "text" | "text_bottom";
 
@@ -15,13 +16,12 @@ export interface DetectGate {
 
 export interface DetectRule extends DetectGate {
   id: string;
-  state?: DetectState;
-  kind?: "permission" | "question" | "auth";
+  state: DetectState;
+  kind?: WaitingReason;
   priority: number;
   region: DetectRegion;
   lines?: number;
   visibleBlocker?: boolean;
-  skipStateUpdate?: boolean;
 }
 
 export interface DetectManifest {
@@ -39,11 +39,14 @@ export interface DetectInput {
 
 export interface DetectResult {
   state: DetectState;
-  kind?: "permission" | "question" | "auth";
+  kind?: WaitingReason;
   rule: DetectRule;
 }
 
+const compiledPatterns = new Map<string, RegExp | undefined>();
+
 function compile(pattern: string): RegExp | undefined {
+  if (compiledPatterns.has(pattern)) return compiledPatterns.get(pattern);
   let flags = "u";
   let source = pattern;
   const inline = /^\(\?([ims]+)\)/.exec(source);
@@ -53,11 +56,14 @@ function compile(pattern: string): RegExp | undefined {
     }
     source = source.slice(inline[0].length);
   }
+  let compiled: RegExp | undefined;
   try {
-    return new RegExp(source, flags);
+    compiled = new RegExp(source, flags);
   } catch {
-    return undefined;
+    compiled = undefined;
   }
+  compiledPatterns.set(pattern, compiled);
+  return compiled;
 }
 
 function testRegex(patterns: string[], subject: string): boolean {
@@ -110,17 +116,14 @@ function regionText(rule: DetectRule, input: DetectInput): string | undefined {
 export function detect(manifest: DetectManifest, input: DetectInput): DetectResult | undefined {
   let best: DetectRule | undefined;
   for (const rule of manifest.rules) {
-    if (rule.state === undefined && !rule.skipStateUpdate) continue;
-    if (!hasPositiveMatcher(rule)) continue;
-
     const subject = regionText(rule, input);
     if (subject === undefined || subject === "") continue;
     if (!matches(rule, subject)) continue;
 
     if (best === undefined || rule.priority > best.priority) best = rule;
   }
-  if (!best || best.skipStateUpdate) return undefined;
-  return { state: best.state ?? "unknown", ...(best.kind ? { kind: best.kind } : {}), rule: best };
+  if (!best) return undefined;
+  return { state: best.state, ...(best.kind ? { kind: best.kind } : {}), rule: best };
 }
 
 function normalize(name: string): string[] {
