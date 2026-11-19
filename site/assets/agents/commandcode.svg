@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <rect x="1" y="1" width="22" height="22" rx="6" fill="#A855F7"/>
+  <text x="12" y="12.5" text-anchor="middle" dominant-baseline="central"
+        font-size="17" font-family="-apple-system, 'SF Pro Text', 'SF Pro', system-ui, sans-serif"
+        font-weight="500" fill="#ffffff">&#x2318;</text>
+</svg>
