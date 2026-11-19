@@ -20,3 +20,4 @@ out/test/**
 AGENTS.md
 MAINTAINERS.md
 bench-results/**
+.video_agent/**

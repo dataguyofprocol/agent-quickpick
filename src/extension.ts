@@ -1,7 +1,6 @@
 import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs";
-import * as os from "os";
 import {
   type LifecycleStatus,
   folderOf,
@@ -132,12 +131,10 @@ async function launchAgent(
       ? reporterLaunch(agent.cmd, agent.launcher, {
           extensionPath,
           platform: process.platform,
-          env: process.env,
-          homedir: os.homedir(),
           readFile: readFileIfExists,
         })
       : undefined;
-  const env = { ...programStatusEnv(agent.name), ...reporter?.env };
+  const env = programStatusEnv(agent.name) ?? {};
 
   const terminal = vscode.window.createTerminal({
     name: tabName,

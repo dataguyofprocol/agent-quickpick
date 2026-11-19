@@ -2,7 +2,7 @@
   "name": "agent-quickpick",
   "displayName": "Agent Quickpick",
   "description": "Quick-pick launcher for agent CLI terminals — Claude, OpenCode, Codex, Copilot, Aider, Goose, Crush, Amp, Droid, Qwen, Plandex, Grok, Cody, Kilo, Qodo, Command Code, pi, oh-my-pi, and your own — opened in the editor area with their own icon and tab color.",
-  "version": "0.14.4",
+  "version": "0.15.0",
   "publisher": "dataguyofprocol",
   "license": "MIT",
   "icon": "icons/icon.png",
@@ -209,7 +209,7 @@
         "agentQuickpick.agentStatusReporters": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Give the Claude Code and OpenCode terminals this extension launches a small status reporter, so they say when they finish a turn or need your input. Claude Code gets `--settings` with hooks for that process only, merged with your own hooks; OpenCode (v2) gets a TUI plugin through `OPENCODE_CLI_CONFIG_CONTENT`, alongside your own plugins. Nothing is written to either agent's configuration. Not available on Windows. Turn this off to launch both agents exactly as configured; their status then falls back to inference."
+          "markdownDescription": "Give the Claude Code terminals this extension launches a small status reporter, so they say when they finish a turn or need your input. Claude Code gets `--settings` with hooks for that process only, merged with your own hooks. OpenCode needs no reporter — it reports OSC 7501 natively since v2.1.0. Nothing is written to the agent's configuration. Not available on Windows. Turn this off to launch Claude Code exactly as configured; its status then falls back to inference."
         },
         "agentQuickpick.fallbackDetection": {
           "type": "boolean",

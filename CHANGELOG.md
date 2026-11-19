@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.0] — 2026-11-19
+
+### Removed
+- **The OpenCode launch-time reporter.** OpenCode V2+ reports its own state over OSC 7501 natively and unconditionally since v2.1.0 (2026-10-20) of anomalyco/opencode — the first release whose tree contains the emitter — so the TUI plugin Agent Quickpick passed through `OPENCODE_CLI_CONFIG_CONTENT` added nothing and is gone. OpenCode ≥ 2.1.0 is unchanged: still tracked first-class through its own reports, no plugin, no env var, your `cli.json` never read. Older OpenCode versions (< 2.1.0) intentionally fall back to heuristic detection (window title, `OSC 9` progress, output), which updates the status bar and sessions picker but does not raise turn-end notifications. The Claude Code reporter (`--settings` hooks) is unaffected.
+
 ## [0.14.4] — 2026-10-31
 
 ### Changed
