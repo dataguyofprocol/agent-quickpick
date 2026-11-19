@@ -3,10 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Agent Quickpick — launch every AI coding agent from one shortcut</title>
-<meta name="description" content="Agent Quickpick launches Claude Code, OpenCode, Codex and any CLI coding agent into editor tabs with their own icon and color — and notifies you the moment one needs your attention. Free, MIT, zero setup.">
-<meta property="og:title" content="Agent Quickpick — one shortcut, every agent">
-<meta property="og:description" content="Launch any CLI coding agent into editor tabs and get pinged the moment it needs you. Works in VS Code, Cursor, Windsurf, Trae.">
+<title>Agent Quickpick — launch every AI coding agent from one keystroke</title>
+<meta name="description" content="Agent Quickpick launches Claude Code, OpenCode, Codex and any CLI coding agent into editor tabs with their own icon and color — and pings you the moment one finishes, fails, or needs permission. Free, MIT, zero setup.">
+<meta property="og:title" content="Agent Quickpick — run every agent, miss nothing">
+<meta property="og:description" content="One keystroke opens any CLI coding agent in an editor tab. Agent Quickpick watches them all and pings you when one needs you.">
 <meta property="og:image" content="assets/icon.png">
 <link rel="icon" href="assets/icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -17,203 +17,152 @@
 <body>
 
 <nav class="nav">
-  <a class="wordmark" href="#top"><img src="assets/icon.png" width="22" height="22" alt="">Agent Quickpick</a>
+  <a class="wordmark" href="#top"><img src="assets/icon.png" width="24" height="24" alt="">Agent Quickpick</a>
   <div class="nav-links">
-    <a href="#wire">The wire</a>
+    <a href="#demo">Demo</a>
+    <a href="#ping">Notifications</a>
     <a href="#agents">Agents</a>
-    <a href="#how">How it knows</a>
-    <a href="#questions">Questions</a>
+    <a href="#faq">FAQ</a>
   </div>
-  <a class="nav-action" href="https://open-vsx.org/extension/dataguyofprocol/agent-quickpick">Install</a>
+  <a class="nav-install" href="https://open-vsx.org/extension/dataguyofprocol/agent-quickpick">Install</a>
 </nav>
 
 <header class="hero" id="top">
   <div class="hero-copy">
-    <h1>One shortcut.<br>Every agent.</h1>
-    <p class="hero-sub">Agent Quickpick launches Claude Code, OpenCode, Codex and any CLI coding agent into editor tabs — and pings you the moment one needs your attention.</p>
-    <a class="button" href="https://open-vsx.org/extension/dataguyofprocol/agent-quickpick">Install from OpenVSX</a>
-    <p class="hero-note">Free · MIT · zero setup · press <kbd>⌘⇧A</kbd> anywhere on this page</p>
-    <div class="hero-facts">
-      <div><strong>18</strong><span>agents built in</span></div>
-      <div><strong>6</strong><span>editors supported</span></div>
-      <div><strong>1</strong><span>shortcut to learn</span></div>
-    </div>
+    <h1>Run every agent.<br>Miss nothing.</h1>
+    <p class="hero-sub">Agent Quickpick opens Claude Code, Codex, OpenCode and any CLI coding agent in a real editor tab — then pings you the moment one finishes, fails, or wants your permission.</p>
+    <a class="button" href="https://open-vsx.org/extension/dataguyofprocol/agent-quickpick">Install on OpenVSX</a>
+    <p class="hero-proof">Free and MIT-licensed. 6,700+ downloads. Zero setup.</p>
   </div>
 
-  <div class="stage" aria-label="Agent Quickpick running a live turn">
-    <div class="tabstrip" id="tabstrip" data-ui></div>
-    <div class="quickpick" id="quickpick" data-ui>
-      <div class="qp-input"><svg class="qp-search" aria-hidden="true" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="#8b8b8b" stroke-width="1.5"><circle cx="6.5" cy="6.5" r="4.5"/><line x1="10" y1="10" x2="14" y2="14"/></svg><input id="qp-filter" type="text" placeholder="Open agent terminal" aria-label="Filter agents" autocomplete="off"></div>
-      <ul class="qp-list" id="qp-list"></ul>
-      <div class="qp-toggle" id="qp-toggle" role="button" tabindex="0" aria-pressed="false" title="Show agents not found on this machine"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8Z"/><circle cx="8" cy="8" r="2"/></svg> show uninstalled</div>
+  <figure class="hero-demo" id="demo">
+    <div class="chrome" data-ui>
+      <div class="chrome-titlebar">
+        <span class="traffic"></span><span class="traffic"></span><span class="traffic"></span>
+        <span class="chrome-tabs">
+          <span class="ctab active"><img src="assets/agents/claude.svg" alt="" width="13" height="13">claude</span>
+          <span class="ctab"><img src="assets/agents/opencode.svg" alt="" width="13" height="13">opencode</span>
+          <span class="ctab"><img src="assets/agents/codex.svg" alt="" width="13" height="13">codex</span>
+        </span>
+      </div>
     </div>
-    <div class="statusbar" data-ui>
-      <span class="sb-segment sb-left">◈ issues</span>
-      <span class="sb-segment sb-left">⌥ main*</span>
-      <span class="sb-spacer"></span>
-      <span class="sb-segment sb-count" id="sb-count"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="currentColor" style="vertical-align:-1px"><path d="M3 8.5 6 5h12l3 3.5v2L13.4 19h-2.8L3 10.5z"/></svg> Agent</span>
-      <span class="sb-segment"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 8.5a5.5 5.5 0 0 1 11 0c0 2-1 3.5-2.5 4.5H5C3.5 12 2.5 10.5 2.5 8.5Z"/><path d="M6 8.5h4"/></svg></span>
+    <div class="demo-frame">
+      <img id="demo-img" src="assets/demo-poster.jpg" alt="Agent Quickpick demo: the picker opens, an agent launches into its own editor tab, and a notification arrives when the agent needs attention" width="1280" height="800">
+      <button class="demo-play" id="demo-play" aria-label="Play the demo video"><svg aria-hidden="true" width="26" height="26" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z"/></svg></button>
     </div>
-    <div class="toast" id="toast" role="status" data-ui></div>
+    <figcaption>A whole turn: pick an agent, watch it work, approve one permission, done. Click the frame to replay.</figcaption>
+  </figure>
+
+  <div class="hero-stats">
+    <div><strong>18</strong><span>agents built in</span></div>
+    <div><strong>6</strong><span>editors supported</span></div>
+    <div><strong>1</strong><span>keystroke to learn</span></div>
+    <div><strong>0</strong><span>config files touched</span></div>
   </div>
 </header>
 
-<section class="wire" id="wire">
-  <h2 class="wire-heading"><span class="wh-dark">Bytes in.</span> <span class="wh-light">Signal out.</span></h2>
-  <div class="wire-in">
-    <div class="wire-terminal" data-ui>
-      <div class="t-titlebar"><span></span><span></span><span></span><em>claude — agent-quickpick</em></div>
-      <pre class="t-body" id="wire-transcript" tabindex="0" aria-label="Terminal transcript showing status escape sequences as they are written"></pre>
-      <div class="t-prompt">$ <input id="wire-replay" type="text" value="claude" aria-label="Command to replay" spellcheck="false"></div>
-    </div>
+<section class="ping" id="ping">
+  <div class="ping-copy">
+    <h2>Walk away.<br>It comes to you.</h2>
+    <p>Finished, failed, or blocked on a permission — Agent Quickpick fires a native OS notification, drops an in-editor toast with a <strong>Show</strong> button, and can play a sound. Even when the editor is behind another app, on another Space, or on another desktop.</p>
+    <p>Clicking <strong>Show</strong> jumps straight to the tab that asked for you.</p>
   </div>
-  <div class="wire-out">
-    <div class="wire-signal" data-ui>
-      <div class="sig-row" id="sig-row"><span class="sig-glyph" id="sig-glyph">●</span><span class="sig-label" id="sig-label">working</span></div>
-      <div class="sig-title" id="sig-title">Refactor the parser…</div>
-      <div class="sig-bar" id="sig-bar"><i></i></div>
+  <div class="ping-stage">
+    <div class="ping-board" data-ui>
+      <div class="pb-row"><span class="pb-glyph g-working">●</span><span class="pb-name"><img src="assets/agents/claude.svg" alt="" width="16" height="16">claude</span><span class="pb-what">refactoring the parser</span><span class="pb-time">now</span></div>
+      <div class="pb-row"><span class="pb-glyph g-blocked">⏸</span><span class="pb-name"><img src="assets/agents/opencode.svg" alt="" width="16" height="16">opencode</span><span class="pb-what">waiting on permission</span><span class="pb-time">2m</span></div>
+      <div class="pb-row"><span class="pb-glyph g-done"><svg aria-hidden="true" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M2.5 8.5l4 4 7-8"/></svg></span><span class="pb-name"><img src="assets/agents/codex.svg" alt="" width="16" height="16">codex</span><span class="pb-what">turn complete</span><span class="pb-time">4m</span></div>
+      <div class="pb-row"><span class="pb-glyph g-error"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9"/></svg></span><span class="pb-name"><img src="assets/agents/aider.svg" alt="" width="16" height="16">aider</span><span class="pb-what">exited 1</span><span class="pb-time">9m</span></div>
     </div>
-    <p class="wire-caption">Agents that speak the <a href="https://www.superlogical.com/rex/docs/build/program-status">Program Status Protocol</a> (OSC 7501) — Claude Code, OpenCode, Codex, pi, Crush and more — are believed word for word. Every other agent is read from its window title, progress and output. Nothing is installed to do either.</p>
-  </div>
-</section>
-
-<section class="demo">
-  <h2>Watch one full turn.</h2>
-  <p class="demo-lead">The shortcut opens the picker. An agent launches into its own editor tab with its own icon. When it hits a permission prompt, a notification fires, and Show jumps straight back to the tab that asked.</p>
-  <figure class="demo-fig">
-    <img id="demo-img" src="assets/demo-poster.jpg" alt="Agent Quickpick demo: the shortcut opens a picker, an agent launches into an editor tab, and a notification arrives when the agent needs attention" width="1280" height="800">
-    <button class="demo-play" id="demo-play" aria-label="Play the demo video"><svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z"/></svg></button>
-    <figcaption>The extension, unedited: picker, tab, ping. Click the frame to replay.</figcaption>
-  </figure>
-</section>
-
-<section class="features">
-  <h2>Small, deliberately.</h2>
-  <div class="feat-grid">
-    <div class="feat-cell">
-      <h3>Your order, not ours</h3>
-      <p>Launches are ranked by frecency — the agents you actually use float to the top, and the order syncs across machines.</p>
-      <div class="fragment fragment-frecency" data-ui id="frag-frecency"></div>
-    </div>
-    <div class="feat-cell feat-flip">
-      <h3>Rename without leaving</h3>
-      <p>Press R in the picker and rename the tab you are about to jump to. Tracking follows the new name.</p>
-      <div class="fragment fragment-rename" data-ui id="frag-rename">
-        <div class="qp-mini">
-          <div class="qp-mini-row selected"><img src="assets/agents/claude.svg" alt="" width="16" height="16"><span>claude</span><i class="mini-btn" title="Rename (R)"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M9.5 3.5l3 3L5 14H2v-3z"/></svg></i></div>
-          <div class="qp-mini-row"><img src="assets/agents/opencode.svg" alt="" width="16" height="16"><span>opencode</span></div>
-        </div>
-      </div>
-    </div>
-    <div class="feat-cell">
-      <h3>Only what you have</h3>
-      <p>Your PATH is probed once; agents you haven't installed stay hidden until you ask for them.</p>
-      <div class="fragment fragment-eye" data-ui id="frag-eye"></div>
-    </div>
-    <div class="feat-cell feat-flip">
-      <h3>The ping, three ways</h3>
-      <p>An OS notification that survives other apps, an in-editor toast with a Show button, and an optional sound.</p>
-      <div class="fragment fragment-notify" data-ui>
-        <div class="os-toast"><strong>Claude · agent-quickpick</strong><span>Needs your approval — refactor the parser…</span></div>
-      </div>
-    </div>
-    <div class="feat-cell">
-      <h3>Status that knows where you are</h3>
-      <p>Sessions are scoped per workspace folder; the status bar counts only the agents in the repo you are editing.</p>
-      <div class="fragment fragment-scope" data-ui id="frag-scope">
-        <div class="scope-row"><img src="assets/agents/codex.svg" alt="" width="14" height="14"><span class="scope-name">codex</span><span class="scope-folder">quickpick</span><span class="scope-glyph">●</span></div>
-        <div class="scope-row"><img src="assets/agents/opencode.svg" alt="" width="14" height="14"><span class="scope-name">opencode</span><span class="scope-folder">quickpick</span><span class="scope-glyph">⏸</span></div>
-        <div class="scope-row dim"><img src="assets/agents/goose.svg" alt="" width="14" height="14"><span class="scope-name">goose</span><span class="scope-folder">other repo</span><span class="scope-glyph">○</span></div>
-      </div>
-    </div>
-    <div class="feat-cell feat-flip">
-      <h3>⌘⇧A is a suggestion</h3>
-      <p>One command, one keybinding, rebindable like any other. No settings page required.</p>
-      <div class="fragment fragment-keys" data-ui>
-        <div class="key-row"><span class="keycap">⌘⇧A</span><span class="key-what">agentQuickpick.open</span></div>
-        <div class="key-row"><span class="keycap">⌘⇧A ⌘⇧A</span><span class="key-what">jump to a running agent</span></div>
-      </div>
+    <div class="os-banner" data-ui id="os-banner">
+      <img src="assets/icon.png" alt="" width="30" height="30">
+      <div class="ob-text"><strong id="banner-title">opencode wants your approval</strong><span id="banner-body">Show jumps to the tab that asked</span></div>
+      <span class="banner-now">now</span>
     </div>
   </div>
 </section>
 
-<section class="ladder" id="how">
-  <div class="ladder-fields">
-    <div class="ladder-field f1">
-      <h2>How it knows.</h2>
-      <div class="ladder-card" data-ui>
-        <img src="assets/agents/opencode.svg" alt="" width="18" height="18">
-        <span class="lc-name">opencode</span>
-        <span class="lc-glyph">⏸</span>
-        <span class="lc-why">state=blocked · kind=permission</span><span class="lc-pill p1">waiting on you</span>
-      </div>
-      <p class="ladder-clause">First, the protocol speaks.</p>
+<section class="flow">
+  <h2>One keystroke, four beats.</h2>
+  <div class="flow-strip">
+    <div class="beat b1">
+      <p class="beat-word">Press.</p>
+      <p class="beat-copy">⌘⇧A opens the picker anywhere in the editor.</p>
+      <div class="beat-frag" data-ui><span class="keycap">⌘⇧A</span></div>
     </div>
-    <div class="ladder-field f2">
-      <div class="ladder-card" data-ui>
-        <img src="assets/agents/gemini.svg" alt="" width="18" height="18">
-        <span class="lc-name">gemini</span>
-        <span class="lc-glyph">⏸</span>
-        <span class="lc-why">title: “permission required”</span><span class="lc-pill p2">reading the output</span>
-      </div>
-      <p class="ladder-clause">Then the output tells.</p>
+    <div class="beat b2">
+      <p class="beat-word">Launch.</p>
+      <p class="beat-copy">The agent opens in its own tab, icon and color and all.</p>
+      <div class="beat-frag" data-ui><span class="ctab active"><img src="assets/agents/gemini.svg" alt="" width="13" height="13">gemini</span></div>
     </div>
-    <div class="ladder-field f3">
-      <div class="ladder-card" data-ui>
-        <img src="assets/agents/aider.svg" alt="" width="18" height="18">
-        <span class="lc-name">aider</span>
-        <span class="lc-glyph"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9"/></svg></span>
-        <span class="lc-why">exit 1</span><span class="lc-pill p3">the exit code said so</span>
-      </div>
-      <p class="ladder-clause">Then the exit code.</p>
+    <div class="beat b3">
+      <p class="beat-word">Leave.</p>
+      <p class="beat-copy">Go read, review, or run something else. It keeps working.</p>
+      <div class="beat-frag dimfrag" data-ui><span class="dim-dot"></span><span>editor in the background</span></div>
     </div>
-    <div class="ladder-field f4">
-      <div class="ladder-card" data-ui>
-        <img src="assets/agents/goose.svg" alt="" width="18" height="18">
-        <span class="lc-name">goose</span>
-        <span class="lc-glyph">○</span>
-        <span class="lc-why">quiet, so it settles to idle</span><span class="lc-pill p4">settling</span>
-      </div>
-      <p class="ladder-clause">Otherwise it settles.</p>
+    <div class="beat b4">
+      <p class="beat-word">Come back.</p>
+      <p class="beat-copy">The ping names the agent. Show, or a double-tap of ⌘⇧A, lands on its tab.</p>
+      <div class="beat-frag" data-ui><span class="pb-glyph g-blocked">⏸</span><span>claude · permission</span></div>
+    </div>
+  </div>
+</section>
+
+<section class="picker">
+  <div class="picker-copy">
+    <h2>The picker learns you.</h2>
+    <p>Agents you actually launch float to the top and stay there across machines. Rename a tab right from the picker. Agents you haven’t installed stay hidden until you go looking. Try it — click a row.</p>
+  </div>
+  <div class="qp" data-ui>
+    <div class="qp-head"><input id="qp-filter" type="text" placeholder="Open agent terminal" aria-label="Filter agents"></div>
+    <ul class="qp-list" id="qp-list"></ul>
+    <div class="qp-foot" id="qp-eye" role="button" tabindex="0" aria-pressed="false"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8Z"/><circle cx="8" cy="8" r="2"/></svg><span>show uninstalled</span></div>
+  </div>
+</section>
+
+<section class="agents" id="agents">
+  <div class="agents-head">
+    <h2>Eighteen agents. Yours too.</h2>
+    <p>OpenCode, Codex, pi and Crush report their own state over the terminal. Claude Code gets a tiny per-launch reporter. Everyone else is read straight off the screen. Your own commands are welcome — name one, give it a command, pick an icon.</p>
+  </div>
+  <div class="wall" id="wall"></div>
+  <div class="wall-note" id="wall-note"></div>
+</section>
+
+<section class="know">
+  <h2>How it knows.</h2>
+  <div class="know-strip">
+    <div class="know-cell k1">
+      <p class="know-word">It reports.</p>
+      <p class="know-copy">Agents speaking the Program Status Protocol are believed word for word.</p>
+      <div class="know-tag t-working">opencode · state=working</div>
+    </div>
+    <div class="know-cell k2">
+      <p class="know-word">The terminal tells.</p>
+      <p class="know-copy">Everyone else is read from window titles, progress output and the screen.</p>
+      <div class="know-tag t-blocked">title: permission required</div>
+    </div>
+    <div class="know-cell k3">
+      <p class="know-word">The exit decides.</p>
+      <p class="know-copy">When a process ends, its exit code sets done or error.</p>
+      <div class="know-tag t-error">exit 1 · error</div>
+    </div>
+    <div class="know-cell k4">
+      <p class="know-word">Otherwise it settles.</p>
+      <p class="know-copy">Output means working. Quiet means idle. Nothing is invented.</p>
+      <div class="know-tag t-idle">quiet · idle</div>
     </div>
   </div>
 </section>
 
 <figure class="arch-band">
   <img src="assets/digital-vaxstation-400-60-and-vt420-terminal.jpg" alt="A DEC VaxStation 4000 with a VT420 terminal showing source code on its screen" width="1920" height="880">
-  <figcaption>A VaxStation 4000 and its VT420. Telling the terminal your state is an old idea — the agents just joined in.</figcaption>
+  <figcaption>Telling the terminal your state is an old idea. The agents finally joined.</figcaption>
 </figure>
 
-<section class="agents" id="agents">
-  <div class="agents-head">
-    <h2><span class="soft">Who reports,</span><br>who’s inferred.</h2>
-    <p class="agents-lede">Every built-in ships with its own icon, tab color and PATH probe — open the picker and only what you have installed appears.</p>
-    <a class="button" href="https://open-vsx.org/extension/dataguyofprocol/agent-quickpick">Install</a>
-  </div>
-  <div class="agents-body">
-    <div class="agents-tabs" role="tablist" id="agents-tabs"></div>
-    <ul class="agents-bands" id="agents-bands"></ul>
-  </div>
-</section>
-
-<section class="editors">
-  <p class="editors-lead">Runs inside</p>
-  <div class="editors-row">
-    <span>VS Code</span><span>Cursor</span><span>Windsurf</span><span>Trae</span><span>Antigravity</span><span>Vodium</span>
-  </div>
-</section>
-
-<section class="questions" id="questions">
-  <div class="q-list" id="q-list"></div>
-  <div class="q-answer" id="q-answer"></div>
-</section>
-
-<section class="rest">
-  <p class="rest-line">Waiting on the machine is the oldest job in computing. The ping is the newest way to stop doing it.</p>
-  <figure class="arch-rest">
-    <img src="assets/a-woman-with-a-hollerith-pantograph-punch.jpg" alt="A 1940 census operator at a Hollerith pantograph punch, waiting on the machine" width="1920" height="1513">
-    <figcaption>A census punch operator, 1940.</figcaption>
-  </figure>
+<section class="faq" id="faq">
+  <h2>Questions.</h2>
+  <div class="faq-list" id="faq-list"></div>
 </section>
 
 <footer class="footer">
@@ -221,7 +170,7 @@
   <span class="f-links"><a href="https://github.com/dataguyofprocol/agent-quickpick">GitHub</a><a href="https://open-vsx.org/extension/dataguyofprocol/agent-quickpick">OpenVSX</a><a href="https://github.com/dataguyofprocol/agent-quickpick/blob/main/CHANGELOG.md">Changelog</a><a href="https://github.com/dataguyofprocol/agent-quickpick/issues">Issues</a></span>
   <span class="f-year">© 2026 · MIT</span>
 </footer>
-<p class="f-credit">Photographs: “Digital VaxStation 400 60 and VT420 terminal” by leighklotz, CC BY 2.0, via Wikimedia Commons; “Card puncher” (NARA), public domain.</p>
+<p class="f-credit">Photograph: “Digital VaxStation 400 60 and VT420 terminal” by leighklotz, CC BY 2.0, via Wikimedia Commons.</p>
 
 <script src="site.js"></script>
 </body>
