@@ -111,7 +111,7 @@ h1 {
   align-items: center;
   gap: 7px;
   padding: 9px 12px;
-  background: #171b21;
+  background: #22272e;
 }
 .traffic { width: 11px; height: 11px; border-radius: 50%; background: #3a414a; }
 .chrome-tabs { display: flex; gap: 2px; margin-left: 12px; }
@@ -119,11 +119,11 @@ h1 {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  color: var(--vsdim);
+  color: #b9c2c9;
   font-size: 13px;
   padding: 5px 12px;
 }
-.ctab.active { color: var(--vstext); background: var(--vspanel); }
+.ctab.active { color: #ffffff; background: var(--vspanel); }
 .demo-frame > img { width: 100%; aspect-ratio: 1280 / 800; object-fit: cover; }
 .demo-frame video { width: 100%; aspect-ratio: 1280 / 800; object-fit: cover; }
 .demo-play {
