@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.1] — 2026-11-19
+
+### Changed
+- **Marketplace discovery pass.** Rewrote the extension description to lead with what people search for — launching *and monitoring* AI coding agents (live working / blocked / done / error status, attention notifications) — and expanded keywords to cover the individual agents (claude code, opencode, codex, copilot, aider, goose, crush, droid, qwen, grok) and the monitor/notification terms. No code changes; this release exists to carry the new metadata to OpenVSX.
+
 ## [0.15.0] — 2026-11-19
 
 ### Removed

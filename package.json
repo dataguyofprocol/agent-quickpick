@@ -1,8 +1,8 @@
 {
   "name": "agent-quickpick",
   "displayName": "Agent Quickpick",
-  "description": "Quick-pick launcher for agent CLI terminals — Claude, OpenCode, Codex, Copilot, Aider, Goose, Crush, Amp, Droid, Qwen, Plandex, Grok, Cody, Kilo, Qodo, Command Code, pi, oh-my-pi, and your own — opened in the editor area with their own icon and tab color.",
-  "version": "0.15.0",
+  "description": "Launch and monitor AI coding agents in editor tabs — Claude Code, OpenCode, Codex, Copilot CLI, Aider, Goose, Crush, Amp, Droid, Qwen, Grok, Plandex, Kilo, and your own — each with its own icon and color. The status bar shows live working / blocked / done / error state per agent, and you get a notification the moment one needs your attention. Zero setup, one shortcut. Works in VS Code, Cursor, Windsurf, Trae, Antigravity and Vodium.",
+  "version": "0.15.1",
   "publisher": "dataguyofprocol",
   "license": "MIT",
   "icon": "icons/icon.png",
@@ -21,15 +21,30 @@
     "Other"
   ],
   "keywords": [
-    "agent",
-    "ai",
-    "terminal",
+    "ai agents",
+    "ai coding agent",
+    "agent launcher",
+    "claude code",
     "claude",
+    "opencode",
+    "codex",
+    "copilot",
+    "aider",
+    "goose",
+    "crush",
+    "droid",
+    "qwen",
+    "grok",
+    "terminal",
+    "status",
+    "notifications",
+    "monitor",
+    "productivity",
+    "quick pick",
+    "launcher",
     "cursor",
     "windsurf",
-    "trae",
-    "quick pick",
-    "launcher"
+    "trae"
   ],
   "activationEvents": [
     "onUri"

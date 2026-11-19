@@ -12,6 +12,8 @@ Built by a dev for devs who run CLI coding agents in VS Code (or Cursor, Windsur
 
 ![Demo](./.github/assets/demo.gif)
 
+<sub>★ If Agent Quickpick saves you a context switch, a quick rating on [OpenVSX](https://open-vsx.org/extension/dataguyofprocol/agent-quickpick) helps other devs find it.</sub>
+
 ---
 
 ## Why use it?
@@ -21,7 +23,7 @@ Built by a dev for devs who run CLI coding agents in VS Code (or Cursor, Windsur
 - **Icons & theme colors out of the box**: Every agent (Claude, Codex, OpenCode, Goose, Aider, etc.) gets a distinct icon and tab color so you can identify active sessions at a glance.
 - **Frecency sorting**: The agents you launch most float to the top automatically. Order syncs across machines via Settings Sync.
 - **Clean & non-intrusive**: Agents not found on your system stay hidden by default so your picker stays clean. Click the eye icon in the title bar anytime to reveal them.
-- **Know when an agent needs you**: Codex and pi report their own state over the terminal with the [Program Status Protocol](https://www.superlogical.com/rex/docs/build/program-status) (OSC 7501); every other agent is tracked by watching its window title, progress reports and output. Either way, native OS notifications, in-editor toasts with a **Show** button, and a sound cue fire when an agent finishes, fails, or is blocked on you, even when VS Code is behind another app or on another Space. **Nothing is installed** and no agent config is touched.
+- **Know when an agent needs you**: Codex, OpenCode and pi report their own state over the terminal with the [Program Status Protocol](https://www.superlogical.com/rex/docs/build/program-status) (OSC 7501); every other agent is tracked by watching its window title, progress reports and output. Either way, native OS notifications, in-editor toasts with a **Show** button, and a sound cue fire when an agent finishes, fails, or is blocked on you, even when VS Code is behind another app or on another Space. **Nothing is installed** and no agent config is touched.
 - **Live session status at a glance**: The running-sessions picker shows a real-time status badge per agent: `⏸` blocked (waiting on you), `✗` error, `✓` done, `●` working, `○` idle. Double-tap `⌘⇧A` to jump to any of them.
 - **Rename tabs from that same picker**: Select a running session and click the edit icon in the picker title bar (or press **R** while the filter is empty) to rename its terminal tab. Lifecycle status, notifications, status-bar counts, and click-to-focus keep working after the rename.
 
