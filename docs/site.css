@@ -176,6 +176,33 @@ h1 {
   100% { transform: translate(0, 0); }
 }
 
+.demo {
+  display: flex;
+  flex-direction: column;
+  gap: 40px;
+  padding-bottom: clamp(72px, 9vw, 120px);
+}
+.demo-main { margin: 0; }
+.window {
+  border-radius: 24px;
+  overflow: hidden;
+  background: #1E1E1E;
+  border: 1px solid var(--navy-line);
+  box-shadow: 0 40px 80px -40px rgba(0, 0, 0, 0.8);
+}
+.window-bar { display: grid; grid-template-columns: repeat(4, 1fr); height: 6px; }
+.window-bar span:nth-child(1) { background: var(--orange); }
+.window-bar span:nth-child(2) { background: var(--blue); }
+.window-bar span:nth-child(3) { background: var(--purple); }
+.window-bar span:nth-child(4) { background: var(--pink); }
+.demo-video {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1280 / 788;
+  background: #1E1E1E;
+}
+
 .jobs {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(480px, 100%), 1fr));
@@ -202,33 +229,22 @@ h1 {
 .job p { font-size: 18px; max-width: 470px; }
 .ui { margin-top: auto; }
 
-.picker {
-  background: var(--navy);
-  color: var(--ink);
+.job-shot {
+  display: block;
   border-radius: 18px;
-  padding: 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 15px;
+  overflow: hidden;
+  background: #1E1E1E;
+  box-shadow: 0 18px 40px -20px rgba(15, 18, 38, 0.7);
+  transition: transform 0.15s ease;
 }
-.picker-row { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 10px; font-weight: 500; }
-.picker-row code { color: var(--dim); font-size: 13px; font-weight: 400; }
-.picker-row.is-active { background: #2A3160; }
-
-.tabs { display: flex; flex-wrap: wrap; gap: 6px; }
-.tab {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 16px;
-  border-radius: 12px 12px 4px 4px;
-  border-top: 3px solid var(--tab);
-  background: var(--navy-3);
-  color: #DADDEB;
-  font-size: 15px;
+.job-shot:hover { transform: translateY(-3px); }
+.job-shot img {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  object-position: top left;
 }
-.tab.is-active { background: var(--navy); color: var(--ink); }
 
 .pills { display: flex; flex-wrap: wrap; gap: 8px; font-family: var(--mono); font-size: 14px; }
 .pill {
@@ -379,5 +395,5 @@ h1 {
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
   .ring { animation: none; }
-  .btn, .wall li { transition: none; }
+  .btn, .wall li, .job-shot { transition: none; }
 }

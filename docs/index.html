@@ -24,6 +24,7 @@
 <header class="wrap nav">
   <a class="wordmark" href="#top"><img src="assets/icon.svg" alt="" width="32" height="32">Agent Quickpick</a>
   <nav class="nav-links" aria-label="Main">
+    <a href="#demo">Demo</a>
     <a href="#jobs">What it does</a>
     <a href="#agents">Agents</a>
     <a href="https://github.com/dataguyofprocol/agent-quickpick">GitHub</a>
@@ -51,25 +52,30 @@
   </div>
 </section>
 
+<section class="wrap demo" id="demo">
+  <div class="section-head">
+    <h2>See it in a real editor.</h2>
+    <p>The picker opens, Claude Code and OpenCode launch into their own tabs, and they run side by side.</p>
+  </div>
+  <figure class="demo-main">
+    <div class="window">
+      <div class="window-bar" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+      <video class="demo-video" src="assets/shots/demo.mp4" poster="assets/shots/demo-poster.jpg" width="1280" height="788" muted loop playsinline controls preload="metadata" aria-label="Screen recording: pressing Cmd+Shift+A opens the Agent Quickpick picker, Claude Code and OpenCode launch into separate editor tabs and run side by side"></video>
+    </div>
+  </figure>
+</section>
+
 <section class="wrap jobs" id="jobs" aria-label="What it does">
   <article class="job sq-orange">
     <h2>Pick from what you have</h2>
     <p>It checks your PATH and lists only the agents you've installed. The ones you reach for most climb to the top, and the order follows you across machines with Settings Sync.</p>
-    <div class="ui picker">
-      <div class="picker-row is-active"><img src="assets/agents/claude.svg" alt="" width="20" height="20"><span>Claude</span><code>claude</code></div>
-      <div class="picker-row"><img src="assets/agents/opencode.svg" alt="" width="20" height="20"><span>OpenCode</span><code>opencode</code></div>
-      <div class="picker-row"><img src="assets/agents/codex.svg" alt="" width="20" height="20"><span>Codex</span><code>codex</code></div>
-    </div>
+    <a class="ui job-shot" href="assets/shots/picker.png"><img src="assets/shots/picker.png" alt="The Agent Quickpick picker listing Terminal, Claude, Command Code, Codex, Copilot, OpenCode, Droid and oh-my-pi with their icons and commands" width="1516" height="804" loading="lazy"></a>
   </article>
 
   <article class="job sq-blue">
     <h2>Launch into its own tab</h2>
     <p>A real editor tab with the agent's icon and color, not another anonymous terminal in the bottom panel. Split three side by side and still tell them apart.</p>
-    <div class="ui tabs">
-      <span class="tab is-active" style="--tab: #FF8C00"><img src="assets/agents/claude.svg" alt="" width="16" height="16">Claude</span>
-      <span class="tab" style="--tab: #4C8DF6"><img src="assets/agents/opencode.svg" alt="" width="16" height="16">OpenCode</span>
-      <span class="tab" style="--tab: #34D399"><img src="assets/agents/codex.svg" alt="" width="16" height="16">Codex</span>
-    </div>
+    <a class="ui job-shot" href="assets/shots/tabs-side-by-side.png"><img src="assets/shots/tabs-side-by-side.png" alt="Claude Code and OpenCode running in two side-by-side editor tabs, each with its own icon" width="2940" height="1844" loading="lazy"></a>
   </article>
 
   <article class="job sq-purple">
